@@ -27,7 +27,8 @@ class Checkpoint:
     fractals: list
     strokes: list
     event_snapshot: tuple
-    historical_snapshots: dict
+    raw_bar_count: int
+    historical_snapshot: dict
     rebuild_count: int
     last_rebuild: dict
     last_engine_inputs: dict
@@ -44,13 +45,16 @@ class IncrementalEngine:
         runtime = profile.get("runtime", {})
         self.max_rebuild_distance = runtime.get("max_rebuild_distance", 200)
         self.checkpoint_interval = runtime.get("checkpoint_interval", 50)
-        self.engine_version = "0.3.0"
+        self.snapshot_retention = max(1, int(runtime.get("snapshot_retention", 20)))
+        self.checkpoint_retention = max(1, int(runtime.get("checkpoint_retention", 10)))
+        self.engine_version = "0.4.0"
         self._raw_bars: list[RawBar] = []
         self._merged_bars = []
         self._fractals = []
         self._strokes = []
         self._event_log = EventLog()
-        self._checkpoints: list[Checkpoint] = []
+        self._checkpoints: dict[int, Checkpoint] = {}
+        self._next_checkpoint_id = 0
         self._historical_snapshots: dict[int, dict] = {}
         self._rebuild_count = 0
         self._last_rebuild = {
@@ -76,7 +80,7 @@ class IncrementalEngine:
         else:
             self._bounded_reconcile(combined, len(new_bars))
 
-        self._historical_snapshots[len(self._raw_bars)] = self._snapshot_payload()
+        self._store_historical_snapshot(len(self._raw_bars), self._snapshot_payload())
         if self.checkpoint_interval and len(self._raw_bars) % self.checkpoint_interval == 0:
             self.create_checkpoint()
         return self.get_current_state()
@@ -253,45 +257,63 @@ class IncrementalEngine:
     def create_checkpoint(self) -> int:
         payload = self._snapshot_payload()
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+        checkpoint_id = self._next_checkpoint_id
+        self._next_checkpoint_id += 1
         cp = Checkpoint(
             copy.deepcopy(self._raw_bars),
             copy.deepcopy(self._merged_bars),
             copy.deepcopy(self._fractals),
             copy.deepcopy(self._strokes),
             self._event_log.snapshot(),
-            copy.deepcopy(self._historical_snapshots),
+            len(self._raw_bars),
+            copy.deepcopy(payload),
             self._rebuild_count,
             copy.deepcopy(self._last_rebuild),
             copy.deepcopy(self._last_engine_inputs),
             copy.deepcopy(self._max_engine_inputs),
             digest,
         )
-        self._checkpoints.append(cp)
+        self._checkpoints[checkpoint_id] = cp
+        while len(self._checkpoints) > self.checkpoint_retention:
+            oldest_id = min(self._checkpoints)
+            del self._checkpoints[oldest_id]
         self._event_log.record(LifecycleEvent(
             event_type=EventType.CHECKPOINT_CREATED,
             object_type="engine",
             object_id="incremental_engine",
             occurred_at_bar_id=self._raw_bars[-1].bar_id if self._raw_bars else "",
             reason_code="CHECKPOINT_INTERVAL",
-            detail={"checkpoint_id": len(self._checkpoints) - 1, "sha256": digest},
+            detail={"checkpoint_id": checkpoint_id, "sha256": digest},
         ))
-        return len(self._checkpoints) - 1
+        return checkpoint_id
 
     def resume_from_checkpoint(self, checkpoint_id: int) -> dict[str, Any]:
-        if checkpoint_id < 0 or checkpoint_id >= len(self._checkpoints):
-            raise ValueError(f"Invalid checkpoint_id: {checkpoint_id}")
+        if checkpoint_id not in self._checkpoints:
+            raise ValueError(
+                f"Invalid or evicted checkpoint_id: {checkpoint_id}; "
+                f"retained={sorted(self._checkpoints)}"
+            )
         cp = self._checkpoints[checkpoint_id]
         self._raw_bars = copy.deepcopy(cp.raw_bars)
         self._merged_bars = copy.deepcopy(cp.merged_bars)
         self._fractals = copy.deepcopy(cp.fractals)
         self._strokes = copy.deepcopy(cp.strokes)
         self._event_log.restore(cp.event_snapshot)
-        self._historical_snapshots = copy.deepcopy(cp.historical_snapshots)
+        self._historical_snapshots = {
+            count: snapshot
+            for count, snapshot in self._historical_snapshots.items()
+            if count <= cp.raw_bar_count
+        }
+        self._store_historical_snapshot(cp.raw_bar_count, cp.historical_snapshot)
         self._rebuild_count = cp.rebuild_count
         self._last_rebuild = copy.deepcopy(cp.last_rebuild)
         self._last_engine_inputs = copy.deepcopy(cp.last_engine_inputs)
         self._max_engine_inputs = copy.deepcopy(cp.max_engine_inputs)
-        self._checkpoints = self._checkpoints[:checkpoint_id + 1]
+        self._checkpoints = {
+            retained_id: retained
+            for retained_id, retained in self._checkpoints.items()
+            if retained_id <= checkpoint_id
+        }
         self._event_log.record(LifecycleEvent(
             event_type=EventType.CHECKPOINT_RESTORED,
             object_type="engine",
@@ -303,7 +325,18 @@ class IncrementalEngine:
         return self.get_current_state()
 
     def get_historical_snapshot(self, raw_bar_count: int) -> dict:
+        if raw_bar_count not in self._historical_snapshots:
+            raise KeyError(
+                f"snapshot {raw_bar_count} is not retained; "
+                f"retained={sorted(self._historical_snapshots)}"
+            )
         return copy.deepcopy(self._historical_snapshots[raw_bar_count])
+
+    def _store_historical_snapshot(self, raw_bar_count: int, snapshot: dict) -> None:
+        self._historical_snapshots[raw_bar_count] = copy.deepcopy(snapshot)
+        while len(self._historical_snapshots) > self.snapshot_retention:
+            oldest_count = min(self._historical_snapshots)
+            del self._historical_snapshots[oldest_count]
 
     def get_current_state(self) -> dict[str, Any]:
         snapshot = self._snapshot_payload()
@@ -317,14 +350,7 @@ class IncrementalEngine:
                 "analysis_mode": "close_only",
                 "calculation_mode": "incremental_frozen_prefix_bounded_tail",
             },
-            "data_quality": {
-                "raw_bar_count": len(self._raw_bars),
-                "valid_bar_count": sum(b.is_valid for b in self._raw_bars),
-                "duplicate_count": 0,
-                "missing_interval_count": 0,
-                "monotonic_timestamp": True,
-                "status": "OK",
-            },
+            "data_quality": self._data_quality(),
             "structures": snapshot["structures"],
             "runtime_state": {
                 "last_processed_bar_id": self._raw_bars[-1].bar_id if self._raw_bars else "",
@@ -335,6 +361,11 @@ class IncrementalEngine:
                 "rebuild_count": self._rebuild_count,
                 "engine_input_sizes": copy.deepcopy(self._last_engine_inputs),
                 "max_engine_input_sizes": copy.deepcopy(self._max_engine_inputs),
+                "historical_snapshot_count": len(self._historical_snapshots),
+                "snapshot_retention": self.snapshot_retention,
+                "checkpoint_count": len(self._checkpoints),
+                "checkpoint_retention": self.checkpoint_retention,
+                "retained_checkpoint_ids": sorted(self._checkpoints),
                 "unfinished_fractal_count": sum(
                     x.status != StructureStatus.CONFIRMED for x in self._fractals
                 ),
@@ -349,6 +380,21 @@ class IncrementalEngine:
                 "historical_snapshot_count": len(self._historical_snapshots),
             },
             "events": self._event_log.to_list(),
+        }
+
+    def _data_quality(self) -> dict:
+        timestamps = [bar.timestamp for bar in self._raw_bars]
+        duplicate_count = len(timestamps) - len(set(timestamps))
+        monotonic = all(a < b for a, b in zip(timestamps, timestamps[1:]))
+        invalid = sum(not bar.is_valid for bar in self._raw_bars)
+        status = "OK" if duplicate_count == 0 and monotonic and invalid == 0 else "WARNING"
+        return {
+            "raw_bar_count": len(self._raw_bars),
+            "valid_bar_count": len(self._raw_bars) - invalid,
+            "duplicate_count": duplicate_count,
+            "missing_interval_count": 0,
+            "monotonic_timestamp": monotonic,
+            "status": status,
         }
 
     def _validate_append(self, bars: list[RawBar]) -> None:

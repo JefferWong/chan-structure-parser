@@ -7,9 +7,9 @@ from chan_parser.domain.lifecycle import FractalType, StrokeDirection, Structure
 from chan_parser.engine.stroke import StrokeEngine
 
 
-def make_mbar(index, o, h, l, c):
+def make_mbar(index, o, h, low, c):
     return MergedBar(bar_id=f"mbar_{index:06d}", bar_index=index, timestamp=datetime(2024,1,1),
-                     open=o, high=h, low=l, close=c, source_raw_bar_ids=[f"bar_{index:06d}"],
+                     open=o, high=h, low=low, close=c, source_raw_bar_ids=[f"bar_{index:06d}"],
                      logical_id=f"mbar:idx_{index}", status=StructureStatus.CONFIRMED)
 
 
@@ -57,3 +57,47 @@ class TestStrokeEngine:
                                        make_fractal("fx2",FractalType.BOTTOM,5,95),
                                        make_fractal("fx3",FractalType.TOP,12,110)],bars,20)
         assert strokes[0].start_price==95
+
+
+
+def test_same_type_anchor_collapse_emits_terminal_event():
+    engine = StrokeEngine({
+        "mode": "strict",
+        "alternating_fractals_required": True,
+        "minimum_merged_bar_count": 5,
+        "endpoint_extreme_required": True,
+        "allow_unconfirmed_tail": True,
+    })
+    bars = [make_mbar(i, 100, 105, 95, 103) for i in range(20)]
+    fractals = [
+        make_fractal("fx1", FractalType.BOTTOM, 1, 98),
+        make_fractal("fx2", FractalType.BOTTOM, 5, 95),
+        make_fractal("fx3", FractalType.TOP, 12, 110),
+    ]
+    _, events = engine.process(fractals, bars, 20)
+    collapsed = [e for e in events if e.reason_code == "SAME_TYPE_ANCHOR_COLLAPSED"]
+    assert len(collapsed) == 1
+    assert collapsed[0].event_type == "CANDIDATE_REJECTED"
+    assert collapsed[0].replaced_by == fractals[1].object_id
+
+
+def test_disallowed_unconfirmed_tail_emits_invalidation_event():
+    engine = StrokeEngine({
+        "mode": "strict",
+        "alternating_fractals_required": True,
+        "minimum_merged_bar_count": 5,
+        "endpoint_extreme_required": True,
+        "allow_unconfirmed_tail": False,
+    })
+    bars = [make_mbar(i, 100, 105, 98, 103) for i in range(10)]
+    strokes, events = engine.process([
+        make_fractal("fx1", FractalType.BOTTOM, 1, 98),
+        make_fractal("fx2", FractalType.TOP, 8, 108),
+    ], bars, 10)
+    assert strokes == []
+    created = [e for e in events if e.event_type == "OBJECT_CREATED"]
+    invalidated = [e for e in events if e.event_type == "OBJECT_INVALIDATED"]
+    assert len(created) == 1
+    assert len(invalidated) == 1
+    assert invalidated[0].object_id == created[0].object_id
+    assert invalidated[0].reason_code == "UNCONFIRMED_TAIL_NOT_ALLOWED"

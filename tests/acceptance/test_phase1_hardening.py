@@ -1,6 +1,9 @@
 """第一阶段硬门禁：生命周期、严格笔、增量路径、检查点与未来函数。"""
 from datetime import datetime, timedelta
+from pathlib import Path
 import random
+
+import pytest
 import yaml
 
 from chan_parser.audit.consistency import ConsistencyChecker
@@ -13,8 +16,16 @@ from chan_parser.engine.incremental import IncrementalEngine
 from chan_parser.engine.stroke import StrokeEngine
 
 
+PROFILE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "configs"
+    / "profiles"
+    / "minimal_strict_v1.yaml"
+)
+
+
 def profile():
-    with open("configs/profiles/minimal_strict_v1.yaml", encoding="utf-8") as f:
+    with PROFILE_PATH.open(encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -219,3 +230,71 @@ def test_incremental_records_new_tail_candidate_rejections_after_bootstrap():
         for event in result["events"]
     )
     assert after > before
+
+
+
+def test_snapshot_and_checkpoint_retention_are_bounded():
+    p = profile()
+    p["runtime"].update({
+        "checkpoint_interval": 10,
+        "snapshot_retention": 3,
+        "checkpoint_retention": 2,
+    })
+    data = bars(80, seed=21)
+    inc = IncrementalEngine(p)
+    result = None
+    for i in range(0, len(data), 10):
+        result = inc.append_batch(data[i:i + 10])
+
+    runtime = result["runtime_state"]
+    assert runtime["historical_snapshot_count"] == 3
+    assert runtime["checkpoint_count"] == 2
+    assert runtime["retained_checkpoint_ids"] == [6, 7]
+    with pytest.raises(KeyError, match="not retained"):
+        inc.get_historical_snapshot(10)
+
+    latest_snapshot = inc.get_historical_snapshot(80)
+    assert latest_snapshot["output_sha256"] == result["audit"]["output_sha256"]
+
+    restored = inc.resume_from_checkpoint(6)
+    assert restored["runtime_state"]["last_processed_bar_id"] == "bar_000070"
+    assert restored["runtime_state"]["checkpoint_count"] == 1
+    assert restored["runtime_state"]["retained_checkpoint_ids"] == [6]
+
+
+def test_incremental_data_quality_matches_full_for_invalid_bars():
+    p = profile()
+    start = datetime(2024, 1, 2, 9, 30)
+    data = [
+        RawBar("bar_000001", 0, start, 100, 105, 98, 103),
+        RawBar("bar_000002", 1, start + timedelta(minutes=30), 100, 99, 98, 103),
+    ]
+    assert data[-1].is_valid is False
+
+    full = FullRebuildEngine(p).process(data)
+    incremental = IncrementalEngine(p).append_batch(data)
+    assert incremental["data_quality"] == full["data_quality"]
+    assert incremental["data_quality"]["status"] == "WARNING"
+
+
+def test_phase1_workflow_uses_read_only_token_without_persisted_credentials():
+    workflow_path = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "phase1-gates.yml"
+    workflow = workflow_path.read_text(encoding="utf-8")
+    assert "permissions:\n      contents: read" in workflow
+    assert "persist-credentials: false" in workflow
+
+
+
+@pytest.mark.parametrize(
+    "override, message",
+    [
+        ({"window_size": 5}, "window_size=3"),
+        ({"use_merged_bars": False}, "use_merged_bars=true"),
+        ({"minimum_distance": 2}, "minimum_distance=1"),
+    ],
+)
+def test_unsupported_phase1_fractal_config_fails_closed(override, message):
+    p = profile()
+    p["fractal"].update(override)
+    with pytest.raises(ValueError, match=message):
+        FullRebuildEngine(p)

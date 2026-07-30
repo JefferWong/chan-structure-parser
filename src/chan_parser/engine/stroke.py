@@ -34,7 +34,25 @@ class StrokeEngine:
         counter = id_offset + 1
         for candidate in fractals[1:]:
             if candidate.fractal_type == anchor.fractal_type:
-                anchor = self._more_extreme(anchor, candidate)
+                winner = self._more_extreme(anchor, candidate)
+                loser = candidate if winner is anchor else anchor
+                events.append(LifecycleEvent(
+                    event_type=EventType.CANDIDATE_REJECTED,
+                    object_type="stroke_candidate",
+                    object_id=f"stroke_anchor:{loser.object_id}",
+                    logical_id=f"stroke_anchor:{loser.logical_id}",
+                    occurred_at_bar_id=candidate.right_bar_id or candidate.merged_bar_id,
+                    reason_code="SAME_TYPE_ANCHOR_COLLAPSED",
+                    replaced_by=winner.object_id,
+                    rule_profile=self.rule_profile,
+                    rule_version=self.rule_version,
+                    detail={
+                        "winner_object_id": winner.object_id,
+                        "loser_object_id": loser.object_id,
+                        "fractal_type": candidate.fractal_type.value,
+                    },
+                ))
+                anchor = winner
                 continue
             valid, reason, detail = self._validate(anchor, candidate, merged_bars, bar_index_offset)
             if not valid:
@@ -84,7 +102,29 @@ class StrokeEngine:
             strokes.append(stroke)
             anchor = candidate
         if strokes and not self.allow_unconfirmed_tail:
-            strokes = [s for s in strokes if s.status == StructureStatus.CONFIRMED]
+            fractal_by_id = {fx.fractal_id: fx for fx in fractals}
+            kept: list[Stroke] = []
+            for stroke in strokes:
+                if stroke.status == StructureStatus.CONFIRMED:
+                    kept.append(stroke)
+                    continue
+                stroke.mark_invalidated(stroke.end_bar_index, "UNCONFIRMED_TAIL_DROPPED")
+                end_fractal = fractal_by_id.get(stroke.end_fractal_id)
+                events.append(LifecycleEvent(
+                    event_type=EventType.INVALIDATED,
+                    object_type="stroke",
+                    object_id=stroke.object_id,
+                    logical_id=stroke.logical_id,
+                    occurred_at_bar_id=(
+                        end_fractal.right_bar_id or end_fractal.merged_bar_id
+                        if end_fractal is not None
+                        else stroke.end_fractal_id
+                    ),
+                    reason_code="UNCONFIRMED_TAIL_NOT_ALLOWED",
+                    rule_profile=self.rule_profile,
+                    rule_version=self.rule_version,
+                ))
+            strokes = kept
         return strokes, events
 
     @staticmethod

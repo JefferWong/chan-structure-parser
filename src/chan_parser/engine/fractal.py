@@ -13,8 +13,23 @@ class FractalEngine:
         self.allow_equal_low = config.get("allow_equal_low", False)
         self.use_merged_bars = config.get("use_merged_bars", True)
         self.minimum_distance = config.get("minimum_distance", 1)
+        self._validate_phase1_config()
         self.rule_profile = "minimal_strict_v1"
         self.rule_version = "1.0.0"
+
+    def _validate_phase1_config(self) -> None:
+        """Reject profile values that Phase 1 does not implement.
+
+        The first-stage parser is deliberately frozen to three merged bars and
+        adjacent-candidate selection. Unsupported values fail closed instead of
+        being silently ignored.
+        """
+        if self.window_size != 3:
+            raise ValueError("Phase 1 supports fractal.window_size=3 only")
+        if not self.use_merged_bars:
+            raise ValueError("Phase 1 requires fractal.use_merged_bars=true")
+        if self.minimum_distance != 1:
+            raise ValueError("Phase 1 supports fractal.minimum_distance=1 only")
 
     def process(
         self,
