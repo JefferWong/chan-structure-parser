@@ -1,12 +1,15 @@
 # Phase 1 hardening
 
-本变更只处理第一阶段基础结构，不接入线段、中枢、CZSC 或 Chan.py。
+This branch remains limited to inclusion processing, fractals, and strict strokes.
 
-完成范围：
+Implemented gates:
 
-1. 真实、确定性、追加式生命周期事件；
-2. 严格笔状态机，硬约束失败不得创建或确认；
-3. 独立增量路径、受限尾部协调、检查点恢复和历史快照；
-4. 独立全量/增量验收测试与 GitHub Actions。
+- deterministic append-only lifecycle events;
+- strict stroke rejection before object creation;
+- immutable historical snapshots and checkpoint restore;
+- frozen confirmed prefix with bounded tail recomputation;
+- engine-input instrumentation proving that inclusion, fractal, and stroke engines receive only the bounded window;
+- full/incremental structural consistency;
+- Python 3.10–3.12 hosted test matrix.
 
-门禁以 CI 为准。CI 全绿前不得进入下一阶段。
+No segment, center, CZSC, Chan.py, position, or trading-signal functionality is included.

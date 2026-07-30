@@ -1,4 +1,4 @@
-"""分型识别引擎，包含创建、确认和替换事件。"""
+"""分型识别引擎，支持全量和带全局索引的有界窗口。"""
 from __future__ import annotations
 
 from ..domain.fractal import Fractal
@@ -16,12 +16,18 @@ class FractalEngine:
         self.rule_profile = "minimal_strict_v1"
         self.rule_version = "1.0.0"
 
-    def process(self, merged_bars: list[MergedBar], raw_bar_count: int) -> tuple[list[Fractal], list[LifecycleEvent]]:
+    def process(
+        self,
+        merged_bars: list[MergedBar],
+        raw_bar_count: int,
+        *,
+        id_offset: int = 0,
+    ) -> tuple[list[Fractal], list[LifecycleEvent]]:
         if len(merged_bars) < self.window_size:
             return [], []
         candidates: list[Fractal] = []
         events: list[LifecycleEvent] = []
-        counter = 1
+        counter = id_offset + 1
         for i in range(1, len(merged_bars) - 1):
             left, mid, right = merged_bars[i - 1], merged_bars[i], merged_bars[i + 1]
             types = []
@@ -31,16 +37,23 @@ class FractalEngine:
                 types.append((FractalType.BOTTOM, mid.low))
             for fx_type, price in types:
                 fx = Fractal(
-                    fractal_id=f"fx_{counter:06d}", fractal_type=fx_type,
-                    merged_bar_id=mid.bar_id, merged_bar_index=i, price=price,
-                    left_bar_id=left.bar_id, right_bar_id=right.bar_id,
-                    window_indices=[i - 1, i, i + 1],
+                    fractal_id=f"fx_{counter:06d}",
+                    fractal_type=fx_type,
+                    merged_bar_id=mid.bar_id,
+                    merged_bar_index=mid.bar_index,
+                    price=price,
+                    left_bar_id=left.bar_id,
+                    right_bar_id=right.bar_id,
+                    window_indices=[left.bar_index, mid.bar_index, right.bar_index],
                     object_id=f"fx_{counter:06d}_r1",
                     logical_id=f"fractal:{fx_type.value.lower()}:{mid.logical_id or mid.bar_id}",
-                    revision=1, status=StructureStatus.CANDIDATE,
-                    created_at_bar=i + 1, repaint_risk="LOW",
+                    revision=1,
+                    status=StructureStatus.CANDIDATE,
+                    created_at_bar=right.bar_index,
+                    repaint_risk="LOW",
                     confirmation_requirements=["selection against adjacent same-type fractals"],
-                    rule_profile=self.rule_profile, rule_version=self.rule_version,
+                    rule_profile=self.rule_profile,
+                    rule_version=self.rule_version,
                 )
                 counter += 1
                 candidates.append(fx)
@@ -57,10 +70,14 @@ class FractalEngine:
             loser, winner = (previous, fx) if new_wins else (fx, previous)
             loser.mark_replaced(winner.object_id)
             events.append(LifecycleEvent(
-                event_type=EventType.STRUCTURE_REPLACED, object_type="fractal",
-                object_id=loser.object_id, logical_id=loser.logical_id,
-                occurred_at_bar_id=fx.right_bar_id, reason_code="SAME_TYPE_MORE_EXTREME",
-                replaced_by=winner.object_id, rule_profile=self.rule_profile,
+                event_type=EventType.STRUCTURE_REPLACED,
+                object_type="fractal",
+                object_id=loser.object_id,
+                logical_id=loser.logical_id,
+                occurred_at_bar_id=fx.right_bar_id,
+                reason_code="SAME_TYPE_MORE_EXTREME",
+                replaced_by=winner.object_id,
+                rule_profile=self.rule_profile,
                 rule_version=self.rule_version,
                 detail={"winner_price": winner.price, "loser_price": loser.price},
             ))
@@ -82,9 +99,14 @@ class FractalEngine:
 
     def _event(self, event_type: str, fx: Fractal, bar_id: str, reason: str) -> LifecycleEvent:
         return LifecycleEvent(
-            event_type=event_type, object_type="fractal", object_id=fx.object_id,
-            logical_id=fx.logical_id, occurred_at_bar_id=bar_id, reason_code=reason,
-            rule_profile=self.rule_profile, rule_version=self.rule_version,
+            event_type=event_type,
+            object_type="fractal",
+            object_id=fx.object_id,
+            logical_id=fx.logical_id,
+            occurred_at_bar_id=bar_id,
+            reason_code=reason,
+            rule_profile=self.rule_profile,
+            rule_version=self.rule_version,
             detail={"status": fx.status.value, "merged_bar_index": fx.merged_bar_index,
                     "fractal_type": fx.fractal_type.value, "price": fx.price},
         )

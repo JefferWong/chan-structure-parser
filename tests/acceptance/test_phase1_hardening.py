@@ -66,7 +66,7 @@ def test_incremental_and_full_use_independent_paths_and_match():
     for i in range(0, len(data), 7): result=inc.append_batch(data[i:i+7])
     checked=ConsistencyChecker().check(full, result)
     assert checked["pass"], checked["differences"]
-    assert result["meta"]["calculation_mode"] == "incremental_bounded_reconciliation"
+    assert result["meta"]["calculation_mode"] == "incremental_frozen_prefix_bounded_tail"
     assert result["runtime_state"]["rebuild_count"] > 0
     assert result["runtime_state"]["local_rebuild_to"] - result["runtime_state"]["local_rebuild_from"] + 1 <= p["runtime"]["max_rebuild_distance"] + 7
 
@@ -98,3 +98,56 @@ def test_confirmed_objects_do_not_reference_future_bars():
         for item in result["structures"]["strokes"]:
             assert item["end_bar_index"] < merged_count
             if item["confirmed_at_bar"] is not None: assert item["confirmed_at_bar"] < merged_count
+
+
+def test_actual_engine_inputs_are_bounded_and_prefix_is_reused():
+    p = profile()
+    p["runtime"]["max_rebuild_distance"] = 80
+    data = bars(600, seed=13)
+    inc = IncrementalEngine(p)
+    observed = {
+        "inclusion_raw_bars": [],
+        "fractal_merged_bars": [],
+        "stroke_fractals": [],
+        "stroke_merged_bars": [],
+    }
+
+    original_inclusion = inc.inclusion_engine.process
+    original_fractal = inc.fractal_engine.process
+    original_stroke = inc.stroke_engine.process
+
+    def inclusion_spy(raw_bars, *args, **kwargs):
+        observed["inclusion_raw_bars"].append(len(raw_bars))
+        return original_inclusion(raw_bars, *args, **kwargs)
+
+    def fractal_spy(merged_bars, *args, **kwargs):
+        observed["fractal_merged_bars"].append(len(merged_bars))
+        return original_fractal(merged_bars, *args, **kwargs)
+
+    def stroke_spy(fractals, merged_bars, *args, **kwargs):
+        observed["stroke_fractals"].append(len(fractals))
+        observed["stroke_merged_bars"].append(len(merged_bars))
+        return original_stroke(fractals, merged_bars, *args, **kwargs)
+
+    inc.inclusion_engine.process = inclusion_spy
+    inc.fractal_engine.process = fractal_spy
+    inc.stroke_engine.process = stroke_spy
+
+    chunk_size = 20
+    result = None
+    for i in range(0, len(data), chunk_size):
+        result = inc.append_batch(data[i:i + chunk_size])
+
+    allowed = p["runtime"]["max_rebuild_distance"] + chunk_size
+    assert all(observed.values())
+    assert max(max(values) for values in observed.values()) <= allowed
+    assert result["runtime_state"]["max_engine_input_sizes"] == {
+        key: max(values) for key, values in observed.items()
+    }
+    assert result["runtime_state"]["frozen_prefix"]["merged_bars"] > 0
+    assert result["runtime_state"]["frozen_prefix"]["fractals"] > 0
+    assert result["runtime_state"]["frozen_prefix"]["strokes"] > 0
+
+    full = FullRebuildEngine(p).process(data)
+    checked = ConsistencyChecker().check(full, result)
+    assert checked["pass"], checked["differences"]

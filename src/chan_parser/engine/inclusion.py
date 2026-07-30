@@ -1,4 +1,4 @@
-"""K线包含处理引擎，产生真实生命周期事件。"""
+"""K线包含处理引擎，支持全量与带方向种子的有界尾部处理。"""
 from __future__ import annotations
 
 from ..domain.lifecycle import EventType, LifecycleEvent, StructureStatus, TrendDirection
@@ -15,12 +15,25 @@ class InclusionEngine:
         self.rule_profile = "minimal_strict_v1"
         self.rule_version = "1.0.0"
 
-    def process(self, raw_bars: list[RawBar]) -> tuple[list[MergedBar], list[LifecycleEvent]]:
+    def process(
+        self,
+        raw_bars: list[RawBar],
+        *,
+        initial_direction: TrendDirection | str | None = None,
+        index_offset: int = 0,
+    ) -> tuple[list[MergedBar], list[LifecycleEvent]]:
+        """处理输入窗口。
+
+        ``initial_direction`` 和 ``index_offset`` 仅用于增量尾部重算；全量调用
+        不传这两个参数时保持原有语义。
+        """
         valid = [b for b in raw_bars if b.is_valid]
         if not valid:
             return [], []
+        if isinstance(initial_direction, str):
+            initial_direction = TrendDirection(initial_direction)
+        direction = initial_direction or self._initial_direction(valid)
         work: list[RawBar] = []
-        direction = self._initial_direction(valid)
         for source in valid:
             if not source.source_raw_bar_ids:
                 source.source_raw_bar_ids = [source.bar_id]
@@ -33,30 +46,53 @@ class InclusionEngine:
 
         merged: list[MergedBar] = []
         events: list[LifecycleEvent] = []
-        for idx, bar in enumerate(work):
+        for local_idx, bar in enumerate(work):
+            global_idx = index_offset + local_idx
+            merge_direction = self._direction_for_bar(
+                work, local_idx, initial_direction if local_idx == 0 else None
+            )
             mb = MergedBar(
-                bar_id=f"mbar_{idx + 1:06d}", bar_index=idx, timestamp=bar.timestamp,
-                open=bar.open, high=bar.high, low=bar.low, close=bar.close, volume=bar.volume,
+                bar_id=f"mbar_{global_idx + 1:06d}",
+                bar_index=global_idx,
+                timestamp=bar.timestamp,
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
                 source_raw_bar_ids=list(bar.source_raw_bar_ids or [bar.bar_id]),
-                merge_direction=self._direction_for_bar(work, idx).value,
-                object_id=f"mbar_{idx + 1:06d}_r1", logical_id=f"mbar:idx_{idx}", revision=1,
-                status=StructureStatus.CONFIRMED, created_at_bar=bar.bar_index,
-                confirmed_at_bar=bar.bar_index, rule_profile=self.rule_profile,
+                merge_direction=merge_direction.value,
+                object_id=f"mbar_{global_idx + 1:06d}_r1",
+                logical_id=f"mbar:idx_{global_idx}",
+                revision=1,
+                status=StructureStatus.CONFIRMED,
+                created_at_bar=bar.bar_index,
+                confirmed_at_bar=bar.bar_index,
+                rule_profile=self.rule_profile,
                 rule_version=self.rule_version,
             )
             merged.append(mb)
+            occurred_at = mb.source_raw_bar_ids[-1]
             events.append(LifecycleEvent(
-                event_type=EventType.CREATED, object_type="merged_bar", object_id=mb.object_id,
-                logical_id=mb.logical_id, occurred_at_bar_id=bar.bar_id,
-                reason_code="INCLUSION_NORMALIZED", rule_profile=self.rule_profile,
+                event_type=EventType.CREATED,
+                object_type="merged_bar",
+                object_id=mb.object_id,
+                logical_id=mb.logical_id,
+                occurred_at_bar_id=occurred_at,
+                reason_code="INCLUSION_NORMALIZED",
+                rule_profile=self.rule_profile,
                 rule_version=self.rule_version,
                 detail={"source_raw_bar_ids": mb.source_raw_bar_ids,
                         "merge_direction": mb.merge_direction},
             ))
             events.append(LifecycleEvent(
-                event_type=EventType.CONFIRMED, object_type="merged_bar", object_id=mb.object_id,
-                logical_id=mb.logical_id, occurred_at_bar_id=bar.bar_id,
-                reason_code="MERGED_BAR_FINALIZED", rule_profile=self.rule_profile,
+                event_type=EventType.CONFIRMED,
+                object_type="merged_bar",
+                object_id=mb.object_id,
+                logical_id=mb.logical_id,
+                occurred_at_bar_id=occurred_at,
+                reason_code="MERGED_BAR_FINALIZED",
+                rule_profile=self.rule_profile,
                 rule_version=self.rule_version,
             ))
         return merged, events
@@ -66,9 +102,14 @@ class InclusionEngine:
             return self._direction_between(bars[0], bars[1], TrendDirection.UP)
         return TrendDirection.UP
 
-    def _direction_for_bar(self, bars: list[RawBar], idx: int) -> TrendDirection:
+    def _direction_for_bar(
+        self,
+        bars: list[RawBar],
+        idx: int,
+        seeded_direction: TrendDirection | None = None,
+    ) -> TrendDirection:
         if idx == 0:
-            return self._initial_direction(bars)
+            return seeded_direction or self._initial_direction(bars)
         return self._direction_between(bars[idx - 1], bars[idx], TrendDirection.UP)
 
     @staticmethod
@@ -86,12 +127,19 @@ class InclusionEngine:
 
     @staticmethod
     def _merge(a: RawBar, b: RawBar, direction: TrendDirection) -> RawBar:
-        high, low = ((max(a.high, b.high), max(a.low, b.low)) if direction == TrendDirection.UP
+        high, low = ((max(a.high, b.high), max(a.low, b.low))
+                     if direction == TrendDirection.UP
                      else (min(a.high, b.high), min(a.low, b.low)))
         source_ids = list(dict.fromkeys((a.source_raw_bar_ids or [a.bar_id]) +
                                         (b.source_raw_bar_ids or [b.bar_id])))
         return RawBar(
-            bar_id=f"_merged_{source_ids[0]}_{source_ids[-1]}", bar_index=a.bar_index,
-            timestamp=max(a.timestamp, b.timestamp), open=a.open, high=high, low=low,
-            close=b.close, volume=a.volume + b.volume, source_raw_bar_ids=source_ids,
+            bar_id=f"_merged_{source_ids[0]}_{source_ids[-1]}",
+            bar_index=a.bar_index,
+            timestamp=max(a.timestamp, b.timestamp),
+            open=a.open,
+            high=high,
+            low=low,
+            close=b.close,
+            volume=a.volume + b.volume,
+            source_raw_bar_ids=source_ids,
         )
