@@ -1,241 +1,240 @@
-"""
-增量计算引擎。
-
-支持逐K线增量更新 + 局部依赖失效 + 有界区间重算。
-"""
-
+"""独立增量路径：追加式事件、受限尾部协调、检查点恢复。"""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
+from ..audit.event_log import EventLog
+from ..domain.lifecycle import EventType, LifecycleEvent, StructureStatus
 from ..domain.raw_bar import RawBar
-from ..domain.merged_bar import MergedBar
-from ..domain.fractal import Fractal
-from ..domain.stroke import Stroke
-from ..domain.lifecycle import (
-    LifecycleEvent,
-    StructureStatus,
-    EventType,
-    FractalType,
-    StrokeDirection,
-)
-from .inclusion import InclusionEngine
 from .fractal import FractalEngine
+from .inclusion import InclusionEngine
 from .stroke import StrokeEngine
+
+
+class RebuildBoundaryExceeded(RuntimeError):
+    pass
 
 
 @dataclass
 class Checkpoint:
-    """计算检查点，用于中断后恢复。"""
-    bar_index: int
-    merged_bars_snapshot: list[dict] = field(default_factory=list)
-    fractals_snapshot: list[dict] = field(default_factory=list)
-    strokes_snapshot: list[dict] = field(default_factory=list)
-    events_snapshot: list[dict] = field(default_factory=list)
-    direction: str = "UP"
-    sha256: str = ""
+    raw_bars: list
+    merged_bars: list
+    fractals: list
+    strokes: list
+    event_snapshot: tuple
+    historical_snapshots: dict
+    rebuild_count: int
+    last_rebuild: dict
+    sha256: str
 
 
 class IncrementalEngine:
-    """增量计算引擎。
-
-    支持三种运行模式：
-    1. 逐K线追加（append_one）
-    2. 批量追加（append_batch）
-    3. 从检查点恢复（resume_from_checkpoint）
-    """
-
     def __init__(self, profile: dict):
         self.profile = profile
         self.inclusion_engine = InclusionEngine(profile.get("inclusion", {}))
         self.fractal_engine = FractalEngine(profile.get("fractal", {}))
         self.stroke_engine = StrokeEngine(profile.get("stroke", {}))
-        self.engine_version = "0.1.0"
-
         runtime = profile.get("runtime", {})
         self.max_rebuild_distance = runtime.get("max_rebuild_distance", 200)
         self.checkpoint_interval = runtime.get("checkpoint_interval", 50)
-
-        # 内部状态
+        self.engine_version = "0.2.0"
         self._raw_bars: list[RawBar] = []
-        self._merged_bars: list[MergedBar] = []
-        self._fractals: list[Fractal] = []
-        self._strokes: list[Stroke] = []
-        self._events: list[LifecycleEvent] = []
+        self._merged_bars = []
+        self._fractals = []
+        self._strokes = []
+        self._event_log = EventLog()
         self._checkpoints: list[Checkpoint] = []
-        self._last_processed_idx: int = -1
-        self._rebuild_count: int = 0
+        self._historical_snapshots: dict[int, dict] = {}
+        self._rebuild_count = 0
+        self._last_rebuild = {"from": None, "to": None, "affected_objects": []}
 
     def append_one(self, raw_bar: RawBar) -> dict[str, Any]:
-        """追加一根K线，返回当前结构状态。"""
         return self.append_batch([raw_bar])
 
-    def append_batch(self, raw_bars: list[RawBar]) -> dict[str, Any]:
-        """追加一批K线。
+    def append_batch(self, new_bars: list[RawBar]) -> dict[str, Any]:
+        if not new_bars:
+            return self.get_current_state()
+        self._validate_append(new_bars)
+        combined = self._raw_bars + list(new_bars)
+        valid = [b for b in combined if b.is_valid]
+        candidate_merged, inc_events = self.inclusion_engine.process(valid)
+        candidate_fractals, fx_events = self.fractal_engine.process(candidate_merged, len(combined))
+        candidate_strokes, st_events = self.stroke_engine.process(candidate_fractals, candidate_merged, len(combined))
 
-        核心逻辑：
-        1. 追加新K线到内部缓存
-        2. 检测是否需要局部重建
-        3. 如果有局部重建需求，从受影响的区间重算
-        4. 否则只处理新增部分
-        """
-        rebuild_from = self._detect_rebuild_boundary(raw_bars)
-
-        if rebuild_from is not None:
-            # 需要局部重建
-            return self._local_rebuild(rebuild_from, raw_bars)
+        if not self._raw_bars:
+            self._raw_bars = combined
+            self._merged_bars, self._fractals, self._strokes = candidate_merged, candidate_fractals, candidate_strokes
+            self._event_log.record_many(inc_events + fx_events + st_events)
+            self._last_rebuild = {"from": 0, "to": len(combined) - 1,
+                                  "affected_objects": self._active_ids()}
         else:
-            # 纯增量追加
-            return self._incremental_append(raw_bars)
+            boundary = max(0, len(self._raw_bars) - self.max_rebuild_distance)
+            first_changed = self._earliest_changed_raw(candidate_merged, candidate_fractals, candidate_strokes, combined)
+            if first_changed < boundary:
+                raise RebuildBoundaryExceeded(
+                    f"required rebuild from raw index {first_changed}, allowed boundary is {boundary}"
+                )
+            old_state = self._object_maps()
+            self._event_log.record(LifecycleEvent(
+                event_type=EventType.REBUILD_START, object_type="engine", object_id="incremental_engine",
+                occurred_at_bar_id=combined[first_changed].bar_id,
+                reason_code="BOUNDED_TAIL_RECONCILIATION",
+                detail={"rebuild_from_bar": first_changed, "rebuild_to_bar": len(combined) - 1,
+                        "max_rebuild_distance": self.max_rebuild_distance},
+            ))
+            self._raw_bars = combined
+            self._merged_bars, self._fractals, self._strokes = candidate_merged, candidate_fractals, candidate_strokes
+            affected = self._record_transitions(old_state, self._object_maps(), combined[-1].bar_id)
+            self._event_log.record(LifecycleEvent(
+                event_type=EventType.REBUILD_END, object_type="engine", object_id="incremental_engine",
+                occurred_at_bar_id=combined[-1].bar_id, reason_code="REBUILD_COMPLETE",
+                detail={"rebuild_from_bar": first_changed, "rebuild_to_bar": len(combined) - 1,
+                        "affected_objects": affected},
+            ))
+            self._rebuild_count += 1
+            self._last_rebuild = {"from": first_changed, "to": len(combined) - 1,
+                                  "affected_objects": affected}
 
-    def resume_from_checkpoint(self, checkpoint_id: int) -> dict[str, Any]:
-        """从检查点恢复。"""
-        if checkpoint_id < 0 or checkpoint_id >= len(self._checkpoints):
-            raise ValueError(f"Invalid checkpoint_id: {checkpoint_id}")
-
-        cp = self._checkpoints[checkpoint_id]
-        # 恢复状态...
+        self._historical_snapshots[len(self._raw_bars)] = self._snapshot_payload()
+        if self.checkpoint_interval and len(self._raw_bars) % self.checkpoint_interval == 0:
+            self.create_checkpoint()
         return self.get_current_state()
-
-    def get_current_state(self) -> dict[str, Any]:
-        """获取当前状态快照。"""
-        raw_count = len(self._raw_bars)
-        valid_bars = [b for b in self._raw_bars if b.is_valid]
-
-        return {
-            "meta": {
-                "symbol": "",
-                "bar_frequency": "",
-                "adjustment": "qfq",
-                "profile_id": self.profile.get("profile_id", "minimal_strict_v1"),
-                "engine_version": self.engine_version,
-                "analysis_mode": "close_only",
-                "calculation_mode": "incremental_with_local_rebuild",
-            },
-            "data_quality": {
-                "raw_bar_count": raw_count,
-                "valid_bar_count": len(valid_bars),
-                "duplicate_count": 0,
-                "missing_interval_count": 0,
-                "monotonic_timestamp": True,
-                "status": "OK",
-            },
-            "structures": {
-                "merged_bars": [mb.to_dict() for mb in self._merged_bars],
-                "fractals": [f.to_dict() for f in self._fractals],
-                "strokes": [s.to_dict() for s in self._strokes],
-            },
-            "runtime_state": {
-                "last_processed_bar_id": (
-                    self._raw_bars[-1].bar_id if self._raw_bars else ""
-                ),
-                "local_rebuild_from": None,
-                "unfinished_fractal_count": sum(
-                    1 for f in self._fractals
-                    if f.status in (StructureStatus.CANDIDATE, StructureStatus.PROVISIONAL)
-                ),
-                "unfinished_stroke_count": sum(
-                    1 for s in self._strokes
-                    if s.status in (StructureStatus.CANDIDATE, StructureStatus.PROVISIONAL)
-                ),
-                "rebuild_count": self._rebuild_count,
-            },
-            "audit": {
-                "event_log_sha256": self._hash_events(),
-            },
-            "events": [self._event_to_dict(e) for e in self._events],
-        }
 
     def create_checkpoint(self) -> int:
-        """创建检查点，返回检查点ID。"""
-        cp = Checkpoint(
-            bar_index=len(self._raw_bars) - 1,
-            merged_bars_snapshot=[mb.to_dict() for mb in self._merged_bars],
-            fractals_snapshot=[f.to_dict() for f in self._fractals],
-            strokes_snapshot=[s.to_dict() for s in self._strokes],
-            events_snapshot=[self._event_to_dict(e) for e in self._events],
-        )
-        cp.sha256 = hashlib.sha256(
-            json.dumps(cp.merged_bars_snapshot, sort_keys=True).encode()
-        ).hexdigest()[:16]
+        payload = self._snapshot_payload()
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+        cp = Checkpoint(copy.deepcopy(self._raw_bars), copy.deepcopy(self._merged_bars),
+                        copy.deepcopy(self._fractals), copy.deepcopy(self._strokes),
+                        self._event_log.snapshot(), copy.deepcopy(self._historical_snapshots),
+                        self._rebuild_count, copy.deepcopy(self._last_rebuild), digest)
         self._checkpoints.append(cp)
+        self._event_log.record(LifecycleEvent(
+            event_type=EventType.CHECKPOINT_CREATED, object_type="engine", object_id="incremental_engine",
+            occurred_at_bar_id=self._raw_bars[-1].bar_id if self._raw_bars else "",
+            reason_code="CHECKPOINT_INTERVAL", detail={"checkpoint_id": len(self._checkpoints)-1, "sha256": digest},
+        ))
         return len(self._checkpoints) - 1
 
-    def _detect_rebuild_boundary(self, new_bars: list[RawBar]) -> Optional[int]:
-        """检测是否需要局部重建，返回重建起始K线索引。
-
-        当前简化实现：总是返回 None（纯增量）。
-        完整实现需要检测新K线是否改变了最后一笔的方向假设。
-        """
-        # TODO: 实现完整的依赖失效检测
-        # 当新K线导致最后一根合并K线的高/低点被突破时，需要重建
-        return None
-
-    def _incremental_append(self, new_bars: list[RawBar]) -> dict[str, Any]:
-        """纯增量追加（不重建历史结构）。"""
-        # 简单实现：全量重算
-        # 完整实现应该只处理新增K线对尾部结构的影响
-        self._raw_bars.extend(new_bars)
-        return self._full_recompute()
-
-    def _local_rebuild(
-        self, rebuild_from: int, new_bars: list[RawBar]
-    ) -> dict[str, Any]:
-        """局部重建：从 rebuild_from 索引开始重算。"""
-        self._rebuild_count += 1
-        self._raw_bars.extend(new_bars)
-        return self._full_recompute()
-
-    def _full_recompute(self) -> dict[str, Any]:
-        """全量重算（内部使用）。"""
-        valid_bars = [b for b in self._raw_bars if b.is_valid]
-
-        # 包含处理
-        self._merged_bars, inc_events = self.inclusion_engine.process(valid_bars)
-
-        # 分型识别
-        self._fractals, fx_events = self.fractal_engine.process(
-            self._merged_bars, len(self._raw_bars)
-        )
-
-        # 笔构建
-        self._strokes, st_events = self.stroke_engine.process(
-            self._fractals, self._merged_bars, len(self._raw_bars)
-        )
-
-        self._events = inc_events + fx_events + st_events
-        self._last_processed_idx = len(self._raw_bars) - 1
-
-        # 自动创建检查点
-        if (
-            self.checkpoint_interval > 0
-            and len(self._raw_bars) % self.checkpoint_interval == 0
-        ):
-            self.create_checkpoint()
-
+    def resume_from_checkpoint(self, checkpoint_id: int) -> dict[str, Any]:
+        if checkpoint_id < 0 or checkpoint_id >= len(self._checkpoints):
+            raise ValueError(f"Invalid checkpoint_id: {checkpoint_id}")
+        cp = self._checkpoints[checkpoint_id]
+        self._raw_bars = copy.deepcopy(cp.raw_bars)
+        self._merged_bars = copy.deepcopy(cp.merged_bars)
+        self._fractals = copy.deepcopy(cp.fractals)
+        self._strokes = copy.deepcopy(cp.strokes)
+        self._event_log.restore(cp.event_snapshot)
+        self._historical_snapshots = copy.deepcopy(cp.historical_snapshots)
+        self._rebuild_count = cp.rebuild_count
+        self._last_rebuild = copy.deepcopy(cp.last_rebuild)
+        self._checkpoints = self._checkpoints[:checkpoint_id + 1]
+        self._event_log.record(LifecycleEvent(
+            event_type=EventType.CHECKPOINT_RESTORED, object_type="engine", object_id="incremental_engine",
+            occurred_at_bar_id=self._raw_bars[-1].bar_id if self._raw_bars else "",
+            reason_code="EXPLICIT_RESTORE", detail={"checkpoint_id": checkpoint_id, "sha256": cp.sha256},
+        ))
         return self.get_current_state()
 
-    def _hash_events(self) -> str:
-        payload = "|".join(
-            f"{e.event_id}|{e.event_type}|{e.object_type}|{e.object_id}|{e.reason_code}"
-            for e in self._events
-        )
-        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+    def get_historical_snapshot(self, raw_bar_count: int) -> dict:
+        return copy.deepcopy(self._historical_snapshots[raw_bar_count])
 
-    def _event_to_dict(self, event: LifecycleEvent) -> dict:
+    def get_current_state(self) -> dict[str, Any]:
         return {
-            "event_id": event.event_id,
-            "event_type": event.event_type,
-            "object_type": event.object_type,
-            "object_id": event.object_id,
-            "logical_id": event.logical_id,
-            "occurred_at_bar_id": event.occurred_at_bar_id,
-            "reason_code": event.reason_code,
-            "replaced_by": event.replaced_by,
-            "rule_profile": event.rule_profile,
-            "rule_version": event.rule_version,
-            "detail": event.detail,
+            "meta": {"symbol": "", "bar_frequency": "", "adjustment": "qfq",
+                     "profile_id": self.profile.get("profile_id", "minimal_strict_v1"),
+                     "engine_version": self.engine_version, "analysis_mode": "close_only",
+                     "calculation_mode": "incremental_bounded_reconciliation"},
+            "data_quality": {"raw_bar_count": len(self._raw_bars),
+                             "valid_bar_count": sum(b.is_valid for b in self._raw_bars),
+                             "duplicate_count": 0, "missing_interval_count": 0,
+                             "monotonic_timestamp": True, "status": "OK"},
+            "structures": self._snapshot_payload()["structures"],
+            "runtime_state": {"last_processed_bar_id": self._raw_bars[-1].bar_id if self._raw_bars else "",
+                              "local_rebuild_from": self._last_rebuild["from"],
+                              "local_rebuild_to": self._last_rebuild["to"],
+                              "affected_objects": list(self._last_rebuild["affected_objects"]),
+                              "rebuild_count": self._rebuild_count,
+                              "unfinished_fractal_count": sum(x.status != StructureStatus.CONFIRMED for x in self._fractals),
+                              "unfinished_stroke_count": sum(x.status != StructureStatus.CONFIRMED for x in self._strokes)},
+            "audit": {"event_log_sha256": self._event_log.compute_sha256(),
+                      "output_sha256": self._snapshot_payload()["output_sha256"],
+                      "event_count": len(self._event_log),
+                      "historical_snapshot_count": len(self._historical_snapshots)},
+            "events": self._event_log.to_list(),
         }
+
+    def _validate_append(self, bars: list[RawBar]) -> None:
+        all_ts = ([self._raw_bars[-1].timestamp] if self._raw_bars else []) + [b.timestamp for b in bars]
+        if any(a >= b for a, b in zip(all_ts, all_ts[1:])):
+            raise ValueError("incremental input timestamps must be strictly increasing")
+
+    def _snapshot_payload(self) -> dict:
+        structures = {"merged_bars": [x.to_dict() for x in self._merged_bars],
+                      "fractals": [x.to_dict() for x in self._fractals],
+                      "strokes": [x.to_dict() for x in self._strokes]}
+        digest = hashlib.sha256(json.dumps(structures, sort_keys=True, default=str).encode()).hexdigest()[:16]
+        return {"structures": structures, "output_sha256": digest}
+
+    def _active_ids(self) -> list[str]:
+        return [x.object_id for x in self._merged_bars + self._fractals + self._strokes]
+
+    def _object_maps(self) -> dict[str, dict]:
+        result = {}
+        for kind, objects in (("merged_bar", self._merged_bars), ("fractal", self._fractals), ("stroke", self._strokes)):
+            for obj in objects:
+                result[f"{kind}:{obj.logical_id}"] = {"kind": kind, "object": obj, "dict": obj.to_dict()}
+        return result
+
+    def _record_transitions(self, old: dict, new: dict, bar_id: str) -> list[str]:
+        affected = []
+        for key in sorted(old.keys() - new.keys()):
+            item = old[key]; obj = item["object"]; affected.append(obj.object_id)
+            self._event_log.record(LifecycleEvent(
+                event_type=EventType.INVALIDATED, object_type=item["kind"], object_id=obj.object_id,
+                logical_id=obj.logical_id, occurred_at_bar_id=bar_id, reason_code="TAIL_REBUILD_REMOVED",
+            ))
+        for key in sorted(new.keys() - old.keys()):
+            item = new[key]; obj = item["object"]; affected.append(obj.object_id)
+            self._event_log.record(LifecycleEvent(
+                event_type=EventType.CREATED, object_type=item["kind"], object_id=obj.object_id,
+                logical_id=obj.logical_id, occurred_at_bar_id=bar_id, reason_code="TAIL_REBUILD_CREATED",
+            ))
+        for key in sorted(old.keys() & new.keys()):
+            before, after = old[key], new[key]
+            if before["dict"] != after["dict"]:
+                obj = after["object"]; affected.append(obj.object_id)
+                event_type = EventType.CONFIRMED if after["dict"].get("status") == "CONFIRMED" and before["dict"].get("status") != "CONFIRMED" else EventType.STATUS_CHANGED
+                self._event_log.record(LifecycleEvent(
+                    event_type=event_type, object_type=after["kind"], object_id=obj.object_id,
+                    logical_id=obj.logical_id, occurred_at_bar_id=bar_id,
+                    reason_code="TAIL_REBUILD_STATE_TRANSITION",
+                    detail={"before_status": before["dict"].get("status"), "after_status": after["dict"].get("status")},
+                ))
+        return sorted(set(affected))
+
+    def _earliest_changed_raw(self, merged, fractals, strokes, combined: list[RawBar]) -> int:
+        old = self._merged_bars
+        first_m = self._first_difference([x.to_dict() for x in old], [x.to_dict() for x in merged])
+        if first_m is None:
+            return max(0, len(self._raw_bars) - 2)
+        if first_m >= len(merged):
+            return max(0, len(self._raw_bars) - 2)
+        source_ids = merged[first_m].source_raw_bar_ids
+        index_by_id = {b.bar_id: i for i, b in enumerate(combined)}
+        indices = [index_by_id[s] for s in source_ids if s in index_by_id]
+        return min(indices) if indices else max(0, len(self._raw_bars) - 2)
+
+    @staticmethod
+    def _first_difference(old: list[dict], new: list[dict]):
+        for i, (a, b) in enumerate(zip(old, new)):
+            comparable_a = {k: v for k, v in a.items() if k not in {"object_id", "revision", "status", "confirmed_at_bar"}}
+            comparable_b = {k: v for k, v in b.items() if k not in {"object_id", "revision", "status", "confirmed_at_bar"}}
+            if comparable_a != comparable_b:
+                return i
+        if len(old) != len(new):
+            return min(len(old), len(new))
+        return None
