@@ -1,0 +1,163 @@
+# ============================================================
+# Chan Structure Parser — Algorithm Profile
+# ============================================================
+# Profile: minimal_strict_v1
+# Scope:   K线包含处理 → 分型识别 → 笔构建（第一阶段）
+# Status:  FROZEN — 任何修改必须创建新版本
+# ============================================================
+
+profile_id: minimal_strict_v1
+profile_version: 1.0.0
+frozen_at: "2026-07-29T17:00:00+08:00"
+description: >
+  第一阶段严格规则配置。
+  仅覆盖包含处理、分型识别、笔构建。
+  所有规则显式声明，不依赖任何库的默认行为。
+
+# ============================================================
+# 1. K线包含处理
+# ============================================================
+inclusion:
+  mode: directional_merge
+  # 包含处理方向由当前趋势方向决定：
+  #   向上趋势 → 取高高、取低高（即两K线中高点取较高者，低点取较高者）
+  #   向下趋势 → 取高低、取低低（即两K线中高点取较低者，低点取较低者）
+
+  equal_high_low_policy: explicit
+  # 当两K线高低点相等时的处理策略：
+  #   explicit → 高点相等时，不产生包含关系；低点相等时，不产生包含关系
+  #   即：只有严格的高点A > 高点B 且 低点A < 低点B（或反之）才算包含
+
+  preserve_source_bars: true
+  # 是否保留原始K线引用
+  #   true → 每根合并后的K线携带其组成原始K线的ID列表
+
+  direction_initialization: first_bar_up
+  # 第一根K线无法确定方向时的默认方向假设：
+  #   first_bar_up → 假设第一根K线处于向上趋势
+
+# ============================================================
+# 2. 分型识别
+# ============================================================
+fractal:
+  window_size: 3
+  # 分型窗口大小：中间K线高点最高/低点最低，且两侧各1根确认
+
+  allow_equal_high: false
+  # 顶分型是否允许中间K线高点与左侧K线高点相等
+  #   false → 中间K线高点必须严格大于左右K线高点
+
+  allow_equal_low: false
+  # 底分型是否允许中间K线低点与左侧K线低点相等
+  #   false → 中间K线低点必须严格小于左右K线低点
+
+  use_merged_bars: true
+  # 分型建立在哪种K线上
+  #   true → 使用包含处理后的合并K线
+  #   false → 使用原始K线
+
+  minimum_distance: 1
+  # 相邻同类型分型（顶-顶 或 底-底）之间最少隔多少根合并K线
+  #   1 → 至少隔1根（即两个顶分型之间至少要有1根非顶分型的K线）
+
+  status_on_creation: CANDIDATE
+  # 新创建分型的初始状态
+
+# ============================================================
+# 3. 笔构建
+# ============================================================
+stroke:
+  mode: strict
+  # 笔的构建模式：
+  #   strict → 严格笔，满足以下全部条件
+
+  alternating_fractals_required: true
+  # 笔的两端必须是交替的顶底分型（顶→底→顶→底...）
+  #   true → 不允许顶→顶或底→底
+
+  minimum_merged_bar_count: 5
+  # 一笔最少需要包含的合并K线数量（含两端分型所在K线）
+  #   5 → 标准缠论要求
+
+  endpoint_extreme_required: true
+  # 笔的端点必须是该方向的极值
+  #   向上笔的终点（顶分型）高点 >= 该笔内所有K线高点
+  #   向下笔的终点（底分型）低点 <= 该笔内所有K线低点
+
+  allow_unconfirmed_tail: true
+  # 是否允许未确认的尾部笔存在
+  #   true → 最新一笔（尚未被后续分型确认的）标记为 PROVISIONAL
+  #   false → 只输出已确认笔
+
+  status_on_completion: CONFIRMED
+  # 笔被后续结构确认后的状态
+
+  status_on_creation: PROVISIONAL
+  # 新创建笔的初始状态（尚未被后续分型确认）
+
+# ============================================================
+# 4. 运行时配置
+# ============================================================
+runtime:
+  calculation_mode: incremental_with_local_rebuild
+  # 计算模式：
+  #   incremental_with_local_rebuild → 常规增量更新 + 局部依赖失效 + 有界区间重算
+
+  close_only: true
+  # 分析模式：
+  #   true → 仅基于收盘价做分析（用于收盘后批量处理）
+  #   false → 实时模式（需考虑未完成K线）
+
+  max_rebuild_distance: 200
+  # 局部重算的最大回溯K线数
+  #   防止在极端情况下退化为全量重算
+
+  checkpoint_interval: 50
+  # 每处理多少根K线创建一个检查点
+  #   0 → 不创建检查点
+
+# ============================================================
+# 5. 数据质量要求
+# ============================================================
+data_quality:
+  require_monotonic_timestamp: true
+  # 是否要求时间戳严格单调递增
+
+  allow_duplicate_timestamps: false
+  # 是否允许重复时间戳
+  #   false → 重复时间戳的数据行将被拒绝
+
+  allow_missing_intervals: true
+  # 是否允许缺失的K线区间
+  #   true → 标记但不中断处理
+
+  max_missing_intervals: 10
+  # 允许的最大缺失区间数量，超出则标记为 ERROR
+
+  min_bars_required: 50
+  # 最少需要的原始K线数量，不足则拒绝处理
+
+  validate_ohlc: true
+  # 是否验证OHLC合法性（高>=低，高>=开/收，低<=开/收）
+
+# ============================================================
+# 6. 审计配置
+# ============================================================
+audit:
+  enable_event_log: true
+  # 是否启用追加式事件日志
+
+  enable_lineage_tracking: true
+  # 是否启用谱系追踪
+
+  enable_content_hashing: true
+  # 是否对输入/输出/事件日志计算SHA256
+
+  hash_exclude_fields:
+    - generated_at
+    - engine_version
+    - profile_version
+  # 计算确定性哈希时排除的字段（非确定性的元数据）
+
+  store_historical_snapshots: true
+  # 是否存储历史快照（用于验证前缀不变性）
