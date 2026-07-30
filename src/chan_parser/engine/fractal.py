@@ -1,220 +1,139 @@
-"""
-分型识别引擎。
-
-基于合并K线序列识别顶分型和底分型。
-"""
-
+"""分型识别引擎，支持全量和带全局索引的有界窗口。"""
 from __future__ import annotations
 
-from typing import Optional
-
 from ..domain.fractal import Fractal
-from ..domain.lifecycle import (
-    EventType,
-    FractalType,
-    LifecycleEvent,
-    StructureStatus,
-)
+from ..domain.lifecycle import EventType, FractalType, LifecycleEvent, StructureStatus
 from ..domain.merged_bar import MergedBar
 
 
 class FractalEngine:
-    """分型识别引擎。
-
-    算法：
-    1. 在合并K线序列上滑动3-K线窗口
-    2. 顶分型：中间K线高点严格最高
-    3. 底分型：中间K线低点严格最低
-    4. 连续同类型分型取最极值
-    """
-
     def __init__(self, config: dict):
-        """
-        Args:
-            config: fractal 配置节（来自 profile）
-        """
         self.window_size = config.get("window_size", 3)
         self.allow_equal_high = config.get("allow_equal_high", False)
         self.allow_equal_low = config.get("allow_equal_low", False)
         self.use_merged_bars = config.get("use_merged_bars", True)
         self.minimum_distance = config.get("minimum_distance", 1)
-        self.default_status = StructureStatus.CANDIDATE
+        self._validate_phase1_config()
         self.rule_profile = "minimal_strict_v1"
         self.rule_version = "1.0.0"
 
-    def process(
-        self, merged_bars: list[MergedBar], raw_bar_count: int
-    ) -> tuple[list[Fractal], list[LifecycleEvent]]:
-        """识别分型。
+    def _validate_phase1_config(self) -> None:
+        """Reject profile values that Phase 1 does not implement.
 
-        Args:
-            merged_bars: 合并K线序列
-            raw_bar_count: 原始K线总数（用于计算 created_at_bar）
-
-        Returns:
-            (fractals, events): 分型列表, 事件列表
+        The first-stage parser is deliberately frozen to three merged bars and
+        adjacent-candidate selection. Unsupported values fail closed instead of
+        being silently ignored.
         """
+        if self.window_size != 3:
+            raise ValueError("Phase 1 supports fractal.window_size=3 only")
+        if not self.use_merged_bars:
+            raise ValueError("Phase 1 requires fractal.use_merged_bars=true")
+        if self.minimum_distance != 1:
+            raise ValueError("Phase 1 supports fractal.minimum_distance=1 only")
+
+    def process(
+        self,
+        merged_bars: list[MergedBar],
+        raw_bar_count: int,
+        *,
+        id_offset: int = 0,
+    ) -> tuple[list[Fractal], list[LifecycleEvent]]:
         if len(merged_bars) < self.window_size:
             return [], []
-
-        events: list[LifecycleEvent] = []
         candidates: list[Fractal] = []
-        fx_counter = 1
-
-        # 滑动窗口识别分型候选
+        events: list[LifecycleEvent] = []
         for i in range(1, len(merged_bars) - 1):
-            left = merged_bars[i - 1]
-            mid = merged_bars[i]
-            right = merged_bars[i + 1]
-
-            top_fractal = self._check_top_fractal(left, mid, right)
-            bottom_fractal = self._check_bottom_fractal(left, mid, right)
-
-            if top_fractal:
-                fractal = Fractal(
-                    fractal_id=f"fx_{fx_counter:06d}",
-                    fractal_type=FractalType.TOP,
+            left, mid, right = merged_bars[i - 1], merged_bars[i], merged_bars[i + 1]
+            types = []
+            if self._check_top_fractal(left, mid, right):
+                types.append((FractalType.TOP, mid.high))
+            if self._check_bottom_fractal(left, mid, right):
+                types.append((FractalType.BOTTOM, mid.low))
+            for fx_type, price in types:
+                type_code = "T" if fx_type == FractalType.TOP else "B"
+                fractal_id = f"fx_{mid.bar_index + 1:06d}_{type_code}"
+                fx = Fractal(
+                    fractal_id=fractal_id,
+                    fractal_type=fx_type,
                     merged_bar_id=mid.bar_id,
-                    merged_bar_index=i,
-                    price=mid.high,
+                    merged_bar_index=mid.bar_index,
+                    price=price,
                     left_bar_id=left.bar_id,
                     right_bar_id=right.bar_id,
-                    window_indices=[i - 1, i, i + 1],
+                    window_indices=[left.bar_index, mid.bar_index, right.bar_index],
+                    object_id=f"{fractal_id}_r1",
+                    logical_id=f"fractal:{fx_type.value.lower()}:{mid.logical_id or mid.bar_id}",
+                    revision=1,
                     status=StructureStatus.CANDIDATE,
-                    created_at_bar=i,
+                    created_at_bar=right.bar_index,
                     repaint_risk="LOW",
-                    confirmation_requirements=[
-                        "opposite fractal confirmed at lower level"
-                    ],
+                    confirmation_requirements=["selection against adjacent same-type fractals"],
                     rule_profile=self.rule_profile,
                     rule_version=self.rule_version,
                 )
-                fractal.logical_id = f"fractal:top:{mid.bar_id}"
-                candidates.append(fractal)
-                fx_counter += 1
+                candidates.append(fx)
+                events.append(self._event(EventType.CREATED, fx, right.bar_id, "THREE_BAR_PATTERN_DETECTED"))
 
-            if bottom_fractal:
-                fractal = Fractal(
-                    fractal_id=f"fx_{fx_counter:06d}",
-                    fractal_type=FractalType.BOTTOM,
-                    merged_bar_id=mid.bar_id,
-                    merged_bar_index=i,
-                    price=mid.low,
-                    left_bar_id=left.bar_id,
-                    right_bar_id=right.bar_id,
-                    window_indices=[i - 1, i, i + 1],
-                    status=StructureStatus.CANDIDATE,
-                    created_at_bar=i,
-                    repaint_risk="LOW",
-                    confirmation_requirements=[
-                        "opposite fractal confirmed at higher level"
-                    ],
-                    rule_profile=self.rule_profile,
-                    rule_version=self.rule_version,
-                )
-                fractal.logical_id = f"fractal:bottom:{mid.bar_id}"
-                candidates.append(fractal)
-                fx_counter += 1
+        selected: list[Fractal] = []
+        for fx in candidates:
+            if not selected or selected[-1].fractal_type != fx.fractal_type:
+                selected.append(fx)
+                continue
+            previous = selected[-1]
+            new_wins = (fx.price > previous.price if fx.fractal_type == FractalType.TOP
+                        else fx.price < previous.price)
+            loser, winner = (previous, fx) if new_wins else (fx, previous)
+            loser.mark_replaced(winner.object_id)
+            events.append(LifecycleEvent(
+                event_type=EventType.STRUCTURE_REPLACED,
+                object_type="fractal",
+                object_id=loser.object_id,
+                logical_id=loser.logical_id,
+                occurred_at_bar_id=fx.right_bar_id,
+                reason_code="SAME_TYPE_MORE_EXTREME",
+                replaced_by=winner.object_id,
+                rule_profile=self.rule_profile,
+                rule_version=self.rule_version,
+                detail={"winner_price": winner.price, "loser_price": loser.price},
+            ))
+            if new_wins:
+                selected[-1] = fx
 
-        # 后处理：合并连续同类型分型，取最极值
-        fractals = self._merge_consecutive_same_type(candidates)
-
-        # 重新编号
-        for idx, f in enumerate(fractals):
-            f.fractal_id = f"fx_{idx + 1:06d}"
-            f.object_id = f.fractal_id
-
-        # 尾部最后一个分型标记为 PROVISIONAL
-        if fractals:
-            last = fractals[-1]
-            if last.status == StructureStatus.CANDIDATE:
-                last.status = StructureStatus.PROVISIONAL
-                last.repaint_risk = "HIGH"
-                last.confirmation_requirements.append("waiting for next opposite fractal")
-
-        return fractals, events
-
-    def _check_top_fractal(
-        self, left: MergedBar, mid: MergedBar, right: MergedBar
-    ) -> bool:
-        """检查是否构成顶分型。"""
-        if self.allow_equal_high:
-            return (
-                mid.high >= left.high
-                and mid.high > right.high
-                and mid.low >= left.low
-                and mid.low > right.low
-            ) or (
-                mid.high > left.high
-                and mid.high >= right.high
-                and mid.low > left.low
-                and mid.low >= right.low
-            )
-        else:
-            return (
-                mid.high > left.high
-                and mid.high > right.high
-            )
-
-    def _check_bottom_fractal(
-        self, left: MergedBar, mid: MergedBar, right: MergedBar
-    ) -> bool:
-        """检查是否构成底分型。"""
-        if self.allow_equal_low:
-            return (
-                mid.low <= left.low
-                and mid.low < right.low
-                and mid.high <= left.high
-                and mid.high < right.high
-            ) or (
-                mid.low < left.low
-                and mid.low <= right.low
-                and mid.high < left.high
-                and mid.high <= right.high
-            )
-        else:
-            return (
-                mid.low < left.low
-                and mid.low < right.low
-            )
-
-    def _merge_consecutive_same_type(
-        self, candidates: list[Fractal]
-    ) -> list[Fractal]:
-        """合并连续同类型分型，保留最极值。
-
-        连续顶分型 → 保留高点最高的
-        连续底分型 → 保留低点最低的
-        """
-        if not candidates:
-            return []
-
-        result: list[Fractal] = []
-        i = 0
-
-        while i < len(candidates):
-            current = candidates[i]
-            # 收集连续同类型分型
-            j = i + 1
-            group = [current]
-            while j < len(candidates) and candidates[j].fractal_type == current.fractal_type:
-                group.append(candidates[j])
-                j += 1
-
-            if len(group) == 1:
-                result.append(current)
+        for idx, fx in enumerate(selected):
+            if idx < len(selected) - 1:
+                fx.mark_confirmed(fx.window_indices[-1])
+                fx.repaint_risk = "NONE"
+                fx.confirmation_requirements = []
+                events.append(self._event(EventType.CONFIRMED, fx, fx.right_bar_id, "NEXT_ACTIVE_FRACTAL_OBSERVED"))
             else:
-                # 多个同类型分型，取最极值
-                if current.fractal_type == FractalType.TOP:
-                    best = max(group, key=lambda f: f.price)
-                else:
-                    best = min(group, key=lambda f: f.price)
-                # 将被合并的分型标记为 REPLACED
-                for g in group:
-                    if g is not best:
-                        g.mark_replaced(best.object_id)
-                result.append(best)
+                fx.status = StructureStatus.PROVISIONAL
+                fx.repaint_risk = "HIGH"
+                fx.confirmation_requirements = ["waiting for next active opposite fractal"]
+                events.append(self._event(EventType.STATUS_CHANGED, fx, fx.right_bar_id, "TAIL_FRACTAL_PROVISIONAL"))
+        return selected, events
 
-            i = j
+    def _event(self, event_type: str, fx: Fractal, bar_id: str, reason: str) -> LifecycleEvent:
+        return LifecycleEvent(
+            event_type=event_type,
+            object_type="fractal",
+            object_id=fx.object_id,
+            logical_id=fx.logical_id,
+            occurred_at_bar_id=bar_id,
+            reason_code=reason,
+            rule_profile=self.rule_profile,
+            rule_version=self.rule_version,
+            detail={"status": fx.status.value, "merged_bar_index": fx.merged_bar_index,
+                    "fractal_type": fx.fractal_type.value, "price": fx.price},
+        )
 
-        return result
+    def _check_top_fractal(self, left: MergedBar, mid: MergedBar, right: MergedBar) -> bool:
+        if self.allow_equal_high:
+            return ((mid.high >= left.high and mid.high > right.high and mid.low >= left.low and mid.low > right.low)
+                    or (mid.high > left.high and mid.high >= right.high and mid.low > left.low and mid.low >= right.low))
+        return mid.high > left.high and mid.high > right.high
+
+    def _check_bottom_fractal(self, left: MergedBar, mid: MergedBar, right: MergedBar) -> bool:
+        if self.allow_equal_low:
+            return ((mid.low <= left.low and mid.low < right.low and mid.high <= left.high and mid.high < right.high)
+                    or (mid.low < left.low and mid.low <= right.low and mid.high < left.high and mid.high <= right.high))
+        return mid.low < left.low and mid.low < right.low

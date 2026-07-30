@@ -1,39 +1,14 @@
-"""
-笔构建引擎。
-
-基于分型序列构建笔，满足严格笔的所有条件。
-"""
-
+"""严格笔状态机，支持全量和带合并K线全局偏移的有界窗口。"""
 from __future__ import annotations
 
-from typing import Optional
-
 from ..domain.fractal import Fractal
-from ..domain.lifecycle import (
-    EventType,
-    FractalType,
-    LifecycleEvent,
-    StructureStatus,
-    StrokeDirection,
-)
+from ..domain.lifecycle import EventType, FractalType, LifecycleEvent, StructureStatus, StrokeDirection
 from ..domain.merged_bar import MergedBar
 from ..domain.stroke import Stroke
 
 
 class StrokeEngine:
-    """笔构建引擎。
-
-    算法：
-    1. 从分型序列中选取交替的顶底分型
-    2. 验证笔的条件（最少K线数、端点极值等）
-    3. 输出笔序列，未完成尾部标记为 PROVISIONAL
-    """
-
     def __init__(self, config: dict):
-        """
-        Args:
-            config: stroke 配置节（来自 profile）
-        """
         self.mode = config.get("mode", "strict")
         self.alternating_required = config.get("alternating_fractals_required", True)
         self.min_merged_bars = config.get("minimum_merged_bar_count", 5)
@@ -47,202 +22,187 @@ class StrokeEngine:
         fractals: list[Fractal],
         merged_bars: list[MergedBar],
         raw_bar_count: int,
+        *,
+        bar_index_offset: int = 0,
+        id_offset: int = 0,
     ) -> tuple[list[Stroke], list[LifecycleEvent]]:
-        """从分型序列构建笔。
-
-        Args:
-            fractals: 分型列表（已处理连续同类型合并）
-            merged_bars: 合并K线列表
-            raw_bar_count: 原始K线总数
-
-        Returns:
-            (strokes, events): 笔列表, 事件列表
-        """
         if len(fractals) < 2:
             return [], []
-
-        events: list[LifecycleEvent] = []
         strokes: list[Stroke] = []
-        stroke_counter = 1
-
-        # 找到第一个有效的分型对
-        i = 0
-        while i < len(fractals) - 1:
-            f1 = fractals[i]
-            f2 = self._find_next_opposite(fractals, i)
-
-            if f2 is None:
-                break
-
-            # 验证笔的条件
-            can_form, reason = self._can_form_stroke(f1, f2, merged_bars)
-
-            if can_form:
-                stroke = self._create_stroke(f1, f2, merged_bars, stroke_counter)
-                stroke_counter += 1
-
-                # 检查端点极值条件
-                if self.endpoint_extreme_required:
-                    extreme_ok, extreme_reason = self._check_endpoint_extreme(
-                        stroke, merged_bars
-                    )
-                    if not extreme_ok:
-                        stroke.confirmation_requirements.append(extreme_reason)
-                        stroke.repaint_risk = "MEDIUM"
-
-                strokes.append(stroke)
-
-                # 标记已确认
-                if len(strokes) >= 2:
-                    strokes[-2].mark_confirmed(strokes[-2].end_bar_index)
-                    strokes[-2].repaint_risk = "NONE"
-                    strokes[-2].confirmation_requirements = []
-
-                # 跳到f2的索引继续
-                i = fractals.index(f2)
-            else:
-                # 不能形成笔，跳过当前分型
-                i += 1
-
-        # 最后一笔标记为 PROVISIONAL
-        if strokes and self.allow_unconfirmed_tail:
-            last = strokes[-1]
-            if last.status == StructureStatus.CANDIDATE:
-                last.status = StructureStatus.PROVISIONAL
-                last.repaint_risk = "HIGH"
-                last.confirmation_requirements.append(
-                    "waiting for next opposite fractal to confirm"
-                )
-
+        events: list[LifecycleEvent] = []
+        anchor = fractals[0]
+        counter = id_offset + 1
+        for candidate in fractals[1:]:
+            if candidate.fractal_type == anchor.fractal_type:
+                winner = self._more_extreme(anchor, candidate)
+                loser = candidate if winner is anchor else anchor
+                events.append(LifecycleEvent(
+                    event_type=EventType.CANDIDATE_REJECTED,
+                    object_type="stroke_candidate",
+                    object_id=f"stroke_anchor:{loser.object_id}",
+                    logical_id=f"stroke_anchor:{loser.logical_id}",
+                    occurred_at_bar_id=candidate.right_bar_id or candidate.merged_bar_id,
+                    reason_code="SAME_TYPE_ANCHOR_COLLAPSED",
+                    replaced_by=winner.object_id,
+                    rule_profile=self.rule_profile,
+                    rule_version=self.rule_version,
+                    detail={
+                        "winner_object_id": winner.object_id,
+                        "loser_object_id": loser.object_id,
+                        "fractal_type": candidate.fractal_type.value,
+                    },
+                ))
+                anchor = winner
+                continue
+            valid, reason, detail = self._validate(anchor, candidate, merged_bars, bar_index_offset)
+            if not valid:
+                events.append(LifecycleEvent(
+                    event_type=EventType.CANDIDATE_REJECTED,
+                    object_type="stroke_candidate",
+                    object_id=f"stroke_candidate:{anchor.object_id}->{candidate.object_id}",
+                    logical_id=f"stroke:{anchor.logical_id}->{candidate.logical_id}",
+                    occurred_at_bar_id=candidate.right_bar_id or candidate.merged_bar_id,
+                    reason_code=reason,
+                    rule_profile=self.rule_profile,
+                    rule_version=self.rule_version,
+                    detail=detail,
+                ))
+                continue
+            stroke = self._create_stroke(anchor, candidate, merged_bars, counter, bar_index_offset)
+            counter += 1
+            events.append(LifecycleEvent(
+                event_type=EventType.CREATED,
+                object_type="stroke",
+                object_id=stroke.object_id,
+                logical_id=stroke.logical_id,
+                occurred_at_bar_id=candidate.right_bar_id or candidate.merged_bar_id,
+                reason_code="STRICT_STROKE_VALID",
+                rule_profile=self.rule_profile,
+                rule_version=self.rule_version,
+                detail={"start_bar_index": stroke.start_bar_index,
+                        "end_bar_index": stroke.end_bar_index,
+                        "direction": stroke.direction.value},
+            ))
+            if strokes:
+                previous = strokes[-1]
+                if previous.end_fractal_id == stroke.start_fractal_id and previous.status == StructureStatus.PROVISIONAL:
+                    previous.mark_confirmed(stroke.end_bar_index)
+                    previous.repaint_risk = "NONE"
+                    previous.confirmation_requirements = []
+                    events.append(LifecycleEvent(
+                        event_type=EventType.CONFIRMED,
+                        object_type="stroke",
+                        object_id=previous.object_id,
+                        logical_id=previous.logical_id,
+                        occurred_at_bar_id=candidate.right_bar_id or candidate.merged_bar_id,
+                        reason_code="NEXT_STRICT_STROKE_CONFIRMED",
+                        rule_profile=self.rule_profile,
+                        rule_version=self.rule_version,
+                    ))
+            strokes.append(stroke)
+            anchor = candidate
+        if strokes and not self.allow_unconfirmed_tail:
+            fractal_by_id = {fx.fractal_id: fx for fx in fractals}
+            kept: list[Stroke] = []
+            for stroke in strokes:
+                if stroke.status == StructureStatus.CONFIRMED:
+                    kept.append(stroke)
+                    continue
+                stroke.mark_invalidated(stroke.end_bar_index, "UNCONFIRMED_TAIL_DROPPED")
+                end_fractal = fractal_by_id.get(stroke.end_fractal_id)
+                events.append(LifecycleEvent(
+                    event_type=EventType.INVALIDATED,
+                    object_type="stroke",
+                    object_id=stroke.object_id,
+                    logical_id=stroke.logical_id,
+                    occurred_at_bar_id=(
+                        end_fractal.right_bar_id or end_fractal.merged_bar_id
+                        if end_fractal is not None
+                        else stroke.end_fractal_id
+                    ),
+                    reason_code="UNCONFIRMED_TAIL_NOT_ALLOWED",
+                    rule_profile=self.rule_profile,
+                    rule_version=self.rule_version,
+                ))
+            strokes = kept
         return strokes, events
 
-    def _find_next_opposite(
-        self, fractals: list[Fractal], start_idx: int
-    ) -> Optional[Fractal]:
-        """找到start_idx之后第一个相反类型的分型。"""
-        if start_idx >= len(fractals):
-            return None
-        target_type = fractals[start_idx].fractal_type
-        for j in range(start_idx + 1, len(fractals)):
-            if fractals[j].fractal_type != target_type:
-                return fractals[j]
-        return None
+    @staticmethod
+    def _more_extreme(a: Fractal, b: Fractal) -> Fractal:
+        if a.fractal_type == FractalType.TOP:
+            return b if b.price > a.price else a
+        return b if b.price < a.price else a
 
-    def _can_form_stroke(
+    def _validate(
         self,
         f1: Fractal,
         f2: Fractal,
-        merged_bars: list[MergedBar],
-    ) -> tuple[bool, str]:
-        """检查两个分型是否能构成有效笔。
-
-        Returns:
-            (can_form, reason)
-        """
-        # 检查类型是否交替
+        bars: list[MergedBar],
+        bar_index_offset: int,
+    ) -> tuple[bool, str, dict]:
         if self.alternating_required and f1.fractal_type == f2.fractal_type:
-            return False, "fractal types not alternating"
-
-        # 检查K线数
-        start_idx = f1.merged_bar_index
-        end_idx = f2.merged_bar_index
-        bar_count = end_idx - start_idx + 1
-
-        if bar_count < self.min_merged_bars:
-            return False, (
-                f"insufficient merged bars: {bar_count} < {self.min_merged_bars}"
-            )
-
-        # 严格模式下：顶分型必须高于底分型，底分型必须低于顶分型
-        if self.mode == "strict":
-            if f1.fractal_type == FractalType.BOTTOM and f2.fractal_type == FractalType.TOP:
-                if f1.price >= f2.price:
-                    return False, "bottom fractal price >= top fractal price in UP stroke"
-            elif f1.fractal_type == FractalType.TOP and f2.fractal_type == FractalType.BOTTOM:
-                if f1.price <= f2.price:
-                    return False, "top fractal price <= bottom fractal price in DOWN stroke"
-
-        return True, ""
-
-    def _check_endpoint_extreme(
-        self, stroke: Stroke, merged_bars: list[MergedBar]
-    ) -> tuple[bool, str]:
-        """检查笔的端点是否为笔内极值。
-
-        向上笔：终点（顶分型）高点 >= 笔内所有K线高点
-        向下笔：终点（底分型）低点 <= 笔内所有K线低点
-        """
-        start = stroke.start_bar_index
-        end = stroke.end_bar_index
-
-        if start < 0 or end >= len(merged_bars) or end <= start:
-            return True, ""
-
-        bars_in_stroke = merged_bars[start : end + 1]
-
-        if stroke.direction == StrokeDirection.UP:
-            max_high = max(b.high for b in bars_in_stroke)
-            if stroke.end_price < max_high:
-                return False, (
-                    f"end price {stroke.end_price} < max high {max_high} in stroke"
-                )
-        else:
-            min_low = min(b.low for b in bars_in_stroke)
-            if stroke.end_price > min_low:
-                return False, (
-                    f"end price {stroke.end_price} > min low {min_low} in stroke"
-                )
-
-        return True, ""
+            return False, "SAME_TYPE_ENDPOINTS", {}
+        start, end = f1.merged_bar_index, f2.merged_bar_index
+        count = end - start + 1
+        if count < self.min_merged_bars:
+            return False, "INSUFFICIENT_MERGED_BARS", {"actual": count, "required": self.min_merged_bars}
+        local_start, local_end = start - bar_index_offset, end - bar_index_offset
+        if local_start < 0 or local_end >= len(bars) or local_end <= local_start:
+            return False, "INVALID_BAR_RANGE", {
+                "start": start, "end": end, "bar_index_offset": bar_index_offset,
+                "available": len(bars),
+            }
+        direction = StrokeDirection.UP if f1.fractal_type == FractalType.BOTTOM else StrokeDirection.DOWN
+        if direction == StrokeDirection.UP and f1.price >= f2.price:
+            return False, "NON_POSITIVE_UP_RANGE", {"start_price": f1.price, "end_price": f2.price}
+        if direction == StrokeDirection.DOWN and f1.price <= f2.price:
+            return False, "NON_POSITIVE_DOWN_RANGE", {"start_price": f1.price, "end_price": f2.price}
+        interval = bars[local_start:local_end + 1]
+        if self.endpoint_extreme_required:
+            max_high, min_low = max(b.high for b in interval), min(b.low for b in interval)
+            if direction == StrokeDirection.UP and (f1.price > min_low or f2.price < max_high):
+                return False, "ENDPOINT_NOT_INTERVAL_EXTREME", {"min_low": min_low, "max_high": max_high}
+            if direction == StrokeDirection.DOWN and (f1.price < max_high or f2.price > min_low):
+                return False, "ENDPOINT_NOT_INTERVAL_EXTREME", {"min_low": min_low, "max_high": max_high}
+        return True, "", {}
 
     def _create_stroke(
         self,
         f1: Fractal,
         f2: Fractal,
-        merged_bars: list[MergedBar],
+        bars: list[MergedBar],
         counter: int,
+        bar_index_offset: int,
     ) -> Stroke:
-        """创建笔对象。"""
-        if f1.fractal_type == FractalType.BOTTOM:
-            direction = StrokeDirection.UP
-        else:
-            direction = StrokeDirection.DOWN
-
-        start_idx = f1.merged_bar_index
-        end_idx = f2.merged_bar_index
-        bar_count = end_idx - start_idx + 1
-
-        bars_in_stroke = merged_bars[start_idx : end_idx + 1]
-        max_price = max(b.high for b in bars_in_stroke)
-        min_price = min(b.low for b in bars_in_stroke)
-
-        if direction == StrokeDirection.UP:
-            price_range = f2.price - f1.price
-        else:
-            price_range = f1.price - f2.price
-
-        stroke = Stroke(
-            stroke_id=f"stroke_{counter:06d}",
+        direction = StrokeDirection.UP if f1.fractal_type == FractalType.BOTTOM else StrokeDirection.DOWN
+        local_start = f1.merged_bar_index - bar_index_offset
+        local_end = f2.merged_bar_index - bar_index_offset
+        interval = bars[local_start:local_end + 1]
+        direction_code = "U" if direction == StrokeDirection.UP else "D"
+        stroke_id = (
+            f"stroke_{f1.merged_bar_index + 1:06d}_"
+            f"{f2.merged_bar_index + 1:06d}_{direction_code}"
+        )
+        return Stroke(
+            stroke_id=stroke_id,
             direction=direction,
             start_fractal_id=f1.fractal_id,
             end_fractal_id=f2.fractal_id,
             start_price=f1.price,
             end_price=f2.price,
-            start_bar_index=start_idx,
-            end_bar_index=end_idx,
-            merged_bar_count=bar_count,
-            max_price=max_price,
-            min_price=min_price,
-            price_range=price_range,
-            status=StructureStatus.CANDIDATE,
-            created_at_bar=end_idx,
-            repaint_risk="LOW",
-            confirmation_requirements=[
-                "next opposite fractal must confirm this stroke"
-            ],
+            start_bar_index=f1.merged_bar_index,
+            end_bar_index=f2.merged_bar_index,
+            merged_bar_count=len(interval),
+            max_price=max(b.high for b in interval),
+            min_price=min(b.low for b in interval),
+            price_range=abs(f2.price - f1.price),
+            object_id=f"{stroke_id}_r1",
+            logical_id=f"stroke:{f1.logical_id}->{f2.logical_id}",
+            revision=1,
+            status=StructureStatus.PROVISIONAL,
+            created_at_bar=f2.window_indices[-1],
+            repaint_risk="HIGH",
+            confirmation_requirements=["next strict stroke must confirm"],
             rule_profile=self.rule_profile,
             rule_version=self.rule_version,
         )
-        stroke.logical_id = f"stroke:{f1.fractal_id}->{f2.fractal_id}"
-        stroke.object_id = stroke.stroke_id
-        return stroke
