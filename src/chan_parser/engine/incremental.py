@@ -75,7 +75,7 @@ class IncrementalEngine:
         self._validate_append(new_bars)
         combined = self._raw_bars + list(new_bars)
 
-        if not self._raw_bars:
+        if not self._raw_bars or not self._merged_bars:
             self._bootstrap(combined)
         else:
             self._bounded_reconcile(combined, len(new_bars))

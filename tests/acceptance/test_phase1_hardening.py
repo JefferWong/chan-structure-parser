@@ -298,3 +298,41 @@ def test_unsupported_phase1_fractal_config_fails_closed(override, message):
     p["fractal"].update(override)
     with pytest.raises(ValueError, match=message):
         FullRebuildEngine(p)
+
+
+def test_incremental_rebootstraps_after_invalid_only_first_batch():
+    p = profile()
+    start = datetime(2024, 1, 2, 9, 30)
+    invalid = RawBar(
+        "bar_000001",
+        0,
+        start,
+        100,
+        99,
+        98,
+        103,
+    )
+    valid = RawBar(
+        "bar_000002",
+        1,
+        start + timedelta(minutes=30),
+        103,
+        106,
+        101,
+        105,
+    )
+    assert invalid.is_valid is False
+    assert valid.is_valid is True
+
+    incremental_engine = IncrementalEngine(p)
+    first = incremental_engine.append_batch([invalid])
+    assert first["structures"]["merged_bars"] == []
+    assert first["data_quality"]["status"] == "WARNING"
+
+    incremental = incremental_engine.append_batch([valid])
+    full = FullRebuildEngine(p).process([invalid, valid])
+    checked = ConsistencyChecker().check(full, incremental)
+
+    assert checked["pass"], checked["differences"]
+    assert len(incremental["structures"]["merged_bars"]) == 1
+    assert incremental["runtime_state"]["last_processed_bar_id"] == "bar_000002"
