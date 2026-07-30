@@ -1,0 +1,36 @@
+# Phase 2 contract-only profile.
+# This file does not enable segment construction in any parser engine.
+profile_id: minimal_segment_contract_v1
+profile_version: 0.1.0
+status: CONTRACT_ONLY
+phase1_profile_id: minimal_strict_v1
+phase1_baseline_commit: de1b7f589ebe3c2a41fa6501d793200a7b595426
+
+segment:
+  mode: canonical_feature_sequence
+  contract_only: true
+  implementation_enabled: false
+
+  minimum_stroke_count: 3
+  require_odd_stroke_count: true
+  require_alternating_directions: true
+  require_contiguous_endpoints: true
+  require_strict_bar_order: true
+  require_confirmed_for_confirmation: true
+  allow_provisional_tail_for_candidate: true
+
+  feature_sequence_source: opposite_direction_strokes
+
+  confirmation:
+    require_explicit_destruction_evidence: true
+    allow_implicit_confirmation: false
+
+  identity:
+    scheme: content_evidence_v1
+
+prohibited_in_this_profile:
+  segment_engine_integration: true
+  center_or_zhongshu: true
+  czsc_or_chanpy_adapter: true
+  trading_signal: true
+  position_or_execution: true
