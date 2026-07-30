@@ -116,7 +116,7 @@ class IncrementalEngine:
         inclusion_tail = [b for b in combined[inclusion_raw_start:] if b.is_valid]
         self._guard_window("inclusion_raw_bars", len(inclusion_tail), allowed_window)
         initial_direction = self._parse_direction(mutable_last.merge_direction)
-        tail_merged, _ = self.inclusion_engine.process(
+        tail_merged, inc_events = self.inclusion_engine.process(
             inclusion_tail,
             initial_direction=initial_direction,
             index_offset=len(frozen_merged),
@@ -137,7 +137,7 @@ class IncrementalEngine:
             ])
         fractal_window = candidate_merged[fractal_merged_start:]
         self._guard_window("fractal_merged_bars", len(fractal_window), allowed_window)
-        tail_fractals, _ = self.fractal_engine.process(
+        tail_fractals, fx_events = self.fractal_engine.process(
             fractal_window,
             len(combined),
             id_offset=self._max_numeric_id(frozen_fractals, "fractal_id"),
@@ -162,7 +162,7 @@ class IncrementalEngine:
         stroke_merged_window = candidate_merged[stroke_merged_start:]
         self._guard_window("stroke_fractals", len(stroke_fractals), allowed_window)
         self._guard_window("stroke_merged_bars", len(stroke_merged_window), allowed_window)
-        tail_strokes, _ = self.stroke_engine.process(
+        tail_strokes, st_events = self.stroke_engine.process(
             stroke_fractals,
             stroke_merged_window,
             len(combined),
@@ -204,6 +204,16 @@ class IncrementalEngine:
         self._fractals = candidate_fractals
         self._strokes = candidate_strokes
         affected = self._record_transitions(old_state, self._object_maps(), combined[-1].bar_id)
+        new_raw_ids = {bar.bar_id for bar in combined[-appended_count:]}
+        new_trigger_ids = new_raw_ids | {
+            merged.bar_id
+            for merged in candidate_merged
+            if new_raw_ids.intersection(merged.source_raw_bar_ids)
+        }
+        self._record_new_diagnostic_events(
+            fx_events + st_events,
+            new_trigger_ids,
+        )
         self._last_engine_inputs = {
             "inclusion_raw_bars": len(inclusion_tail),
             "fractal_merged_bars": len(fractal_window),
@@ -465,6 +475,21 @@ class IncrementalEngine:
                 },
             ))
         return sorted(set(affected))
+
+    def _record_new_diagnostic_events(
+        self, events: list[LifecycleEvent], new_bar_ids: set[str]
+    ) -> None:
+        """Record non-persistent tail diagnostics triggered by newly appended bars only."""
+        diagnostic_types = {
+            EventType.CANDIDATE_REJECTED,
+            EventType.STRUCTURE_REPLACED,
+        }
+        for event in events:
+            if (
+                event.event_type in diagnostic_types
+                and event.occurred_at_bar_id in new_bar_ids
+            ):
+                self._event_log.record(event)
 
     def _guard_window(self, name: str, actual: int, allowed: int) -> None:
         if actual > allowed:

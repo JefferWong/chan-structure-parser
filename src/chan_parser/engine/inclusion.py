@@ -34,23 +34,24 @@ class InclusionEngine:
             initial_direction = TrendDirection(initial_direction)
         direction = initial_direction or self._initial_direction(valid)
         work: list[RawBar] = []
+        work_directions: list[TrendDirection] = []
         for source in valid:
             if not source.source_raw_bar_ids:
                 source.source_raw_bar_ids = [source.bar_id]
             if work and self._has_inclusion(work[-1], source):
                 work[-1] = self._merge(work[-1], source, direction)
+                work_directions[-1] = direction
                 continue
             if work:
                 direction = self._direction_between(work[-1], source, direction)
             work.append(source)
+            work_directions.append(direction)
 
         merged: list[MergedBar] = []
         events: list[LifecycleEvent] = []
         for local_idx, bar in enumerate(work):
             global_idx = index_offset + local_idx
-            merge_direction = self._direction_for_bar(
-                work, local_idx, initial_direction if local_idx == 0 else None
-            )
+            merge_direction = work_directions[local_idx]
             mb = MergedBar(
                 bar_id=f"mbar_{global_idx + 1:06d}",
                 bar_index=global_idx,

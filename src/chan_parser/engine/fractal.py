@@ -27,7 +27,6 @@ class FractalEngine:
             return [], []
         candidates: list[Fractal] = []
         events: list[LifecycleEvent] = []
-        counter = id_offset + 1
         for i in range(1, len(merged_bars) - 1):
             left, mid, right = merged_bars[i - 1], merged_bars[i], merged_bars[i + 1]
             types = []
@@ -36,8 +35,10 @@ class FractalEngine:
             if self._check_bottom_fractal(left, mid, right):
                 types.append((FractalType.BOTTOM, mid.low))
             for fx_type, price in types:
+                type_code = "T" if fx_type == FractalType.TOP else "B"
+                fractal_id = f"fx_{mid.bar_index + 1:06d}_{type_code}"
                 fx = Fractal(
-                    fractal_id=f"fx_{counter:06d}",
+                    fractal_id=fractal_id,
                     fractal_type=fx_type,
                     merged_bar_id=mid.bar_id,
                     merged_bar_index=mid.bar_index,
@@ -45,7 +46,7 @@ class FractalEngine:
                     left_bar_id=left.bar_id,
                     right_bar_id=right.bar_id,
                     window_indices=[left.bar_index, mid.bar_index, right.bar_index],
-                    object_id=f"fx_{counter:06d}_r1",
+                    object_id=f"{fractal_id}_r1",
                     logical_id=f"fractal:{fx_type.value.lower()}:{mid.logical_id or mid.bar_id}",
                     revision=1,
                     status=StructureStatus.CANDIDATE,
@@ -55,7 +56,6 @@ class FractalEngine:
                     rule_profile=self.rule_profile,
                     rule_version=self.rule_version,
                 )
-                counter += 1
                 candidates.append(fx)
                 events.append(self._event(EventType.CREATED, fx, right.bar_id, "THREE_BAR_PATTERN_DETECTED"))
 

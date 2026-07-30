@@ -151,3 +151,71 @@ def test_actual_engine_inputs_are_bounded_and_prefix_is_reused():
     full = FullRebuildEngine(p).process(data)
     checked = ConsistencyChecker().check(full, result)
     assert checked["pass"], checked["differences"]
+
+
+def test_equal_boundary_preserves_direction_seed_across_incremental_split():
+    p = profile()
+    start = datetime(2024, 1, 2, 9, 30)
+    data = [
+        RawBar("bar_000001", 0, start, 99, 101, 96, 98),
+        RawBar("bar_000002", 1, start + timedelta(minutes=30), 98, 100, 95, 97),
+        # Equal high means no inclusion in explicit mode. The carried direction must remain DOWN.
+        RawBar("bar_000003", 2, start + timedelta(minutes=60), 97, 100, 94, 96),
+        # Strictly contained by bar 3; DOWN merge must produce high=99, low=94.
+        RawBar("bar_000004", 3, start + timedelta(minutes=90), 96, 99, 95, 96),
+    ]
+
+    full = FullRebuildEngine(p).process(data)
+    inc = IncrementalEngine(p)
+    before = inc.append_batch(data[:3])
+    assert before["structures"]["merged_bars"][-1]["merge_direction"] == "DOWN"
+    result = inc.append_one(data[3])
+
+    checked = ConsistencyChecker().check(full, result)
+    assert checked["pass"], checked["differences"]
+    last = result["structures"]["merged_bars"][-1]
+    assert (last["high"], last["low"], last["merge_direction"]) == (99, 94, "DOWN")
+
+
+def test_incremental_ids_are_unique_and_do_not_false_confirm_disconnected_strokes():
+    p = profile()
+    p["runtime"]["max_rebuild_distance"] = 1000
+    data = bars(160, seed=12)
+    full = FullRebuildEngine(p).process(data)
+    inc = IncrementalEngine(p)
+    result = None
+    for i in range(0, len(data), 2):
+        result = inc.append_batch(data[i:i + 2])
+
+    fractals = result["structures"]["fractals"]
+    strokes = result["structures"]["strokes"]
+    assert len({x["fractal_id"] for x in fractals}) == len(fractals)
+    assert len({x["object_id"] for x in fractals}) == len(fractals)
+    assert len({x["stroke_id"] for x in strokes}) == len(strokes)
+    assert len({x["object_id"] for x in strokes}) == len(strokes)
+
+    fractal_ids = {x["fractal_id"] for x in fractals}
+    assert all(x["start_fractal_id"] in fractal_ids for x in strokes)
+    assert all(x["end_fractal_id"] in fractal_ids for x in strokes)
+
+    checked = ConsistencyChecker().check(full, result)
+    assert checked["pass"], checked["differences"]
+
+
+def test_incremental_records_new_tail_candidate_rejections_after_bootstrap():
+    p = profile()
+    data = bars(160, seed=13)
+    inc = IncrementalEngine(p)
+    first = inc.append_batch(data[:20])
+    before = sum(
+        event["event_type"] == "CANDIDATE_REJECTED"
+        for event in first["events"]
+    )
+    result = first
+    for i in range(20, len(data), 7):
+        result = inc.append_batch(data[i:i + 7])
+    after = sum(
+        event["event_type"] == "CANDIDATE_REJECTED"
+        for event in result["events"]
+    )
+    assert after > before

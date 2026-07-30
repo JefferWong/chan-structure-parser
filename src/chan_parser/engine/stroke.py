@@ -138,8 +138,13 @@ class StrokeEngine:
         local_start = f1.merged_bar_index - bar_index_offset
         local_end = f2.merged_bar_index - bar_index_offset
         interval = bars[local_start:local_end + 1]
+        direction_code = "U" if direction == StrokeDirection.UP else "D"
+        stroke_id = (
+            f"stroke_{f1.merged_bar_index + 1:06d}_"
+            f"{f2.merged_bar_index + 1:06d}_{direction_code}"
+        )
         return Stroke(
-            stroke_id=f"stroke_{counter:06d}",
+            stroke_id=stroke_id,
             direction=direction,
             start_fractal_id=f1.fractal_id,
             end_fractal_id=f2.fractal_id,
@@ -151,7 +156,7 @@ class StrokeEngine:
             max_price=max(b.high for b in interval),
             min_price=min(b.low for b in interval),
             price_range=abs(f2.price - f1.price),
-            object_id=f"stroke_{counter:06d}_r1",
+            object_id=f"{stroke_id}_r1",
             logical_id=f"stroke:{f1.logical_id}->{f2.logical_id}",
             revision=1,
             status=StructureStatus.PROVISIONAL,
