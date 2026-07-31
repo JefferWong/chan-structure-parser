@@ -32,6 +32,46 @@
     "reason_code": "CONFIRMED_SEGMENT_REPLACED"
   },
   {
+    "fixture_id": "LIFECYCLE-NO-CANDIDATE-REJECT-001",
+    "rule_ids": ["EQ-LIFECYCLE-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"minimum_candidate_window_present": false, "provisional_evidence_present": false, "evidence_complete": false, "evidence_invalidated": false},
+    "expected": {"accepted": false},
+    "reason_code": "NO_CANDIDATE_LIFECYCLE_FORBIDDEN"
+  },
+  {
+    "fixture_id": "LIFECYCLE-CANDIDATE-001",
+    "rule_ids": ["EQ-LIFECYCLE-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"minimum_candidate_window_present": true, "provisional_evidence_present": false, "evidence_complete": false, "evidence_invalidated": false},
+    "expected": {"status": "CANDIDATE"},
+    "reason_code": "MINIMUM_CANDIDATE_WINDOW"
+  },
+  {
+    "fixture_id": "LIFECYCLE-PROVISIONAL-001",
+    "rule_ids": ["EQ-LIFECYCLE-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"minimum_candidate_window_present": true, "provisional_evidence_present": true, "evidence_complete": false, "evidence_invalidated": false},
+    "expected": {"status": "PROVISIONAL"},
+    "reason_code": "PROVISIONAL_EVIDENCE_PRESENT"
+  },
+  {
+    "fixture_id": "LIFECYCLE-EVIDENCE-WITHOUT-CANDIDATE-REJECT-001",
+    "rule_ids": ["EQ-LIFECYCLE-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"minimum_candidate_window_present": false, "provisional_evidence_present": true, "evidence_complete": false, "evidence_invalidated": false},
+    "expected": {"accepted": false},
+    "reason_code": "LIFECYCLE_EVIDENCE_WITHOUT_CANDIDATE"
+  },
+  {
+    "fixture_id": "LIFECYCLE-CONTRADICTORY-EVIDENCE-REJECT-001",
+    "rule_ids": ["EQ-LIFECYCLE-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"minimum_candidate_window_present": true, "provisional_evidence_present": true, "evidence_complete": true, "evidence_invalidated": false},
+    "expected": {"accepted": false},
+    "reason_code": "provisional and complete evidence are contradictory"
+  },
+  {
     "fixture_id": "TIMING-NO-BACKFILL-001",
     "rule_ids": ["EQ-TIME-001"],
     "classification": "ENGINEERING_DETERMINISM_V1",

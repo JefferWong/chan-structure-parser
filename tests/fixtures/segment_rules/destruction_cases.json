@@ -67,7 +67,7 @@
     "fixture_id": "CASE2-UP-PENDING-001",
     "rule_ids": ["DS-CASE2"],
     "classification": "ORIGINAL_CANONICAL_CORE",
-    "input": {"direction": "UP", "left": [1, 2], "center": [3, 7], "right": [2, 5], "pen_break": true},
+    "input": {"direction": "UP", "left": [1, 2], "center": [3, 7], "right": [2, 5]},
     "expected": {"case": "SECOND_CASE_PENDING"},
     "reason_code": "SECOND_CASE_GAP_PENDING"
   },
@@ -75,7 +75,7 @@
     "fixture_id": "CASE2-DOWN-PENDING-001",
     "rule_ids": ["DS-CASE2"],
     "classification": "ORIGINAL_CANONICAL_CORE",
-    "input": {"direction": "DOWN", "left": [7, 8], "center": [2, 6], "right": [3, 7], "pen_break": true},
+    "input": {"direction": "DOWN", "left": [7, 8], "center": [2, 6], "right": [3, 7]},
     "expected": {"case": "SECOND_CASE_PENDING"},
     "reason_code": "SECOND_CASE_GAP_PENDING"
   },
@@ -91,24 +91,120 @@
     "fixture_id": "CASE2-GAP-NOT-CLOSED-CONFIRM-001",
     "rule_ids": ["DS-CASE2"],
     "classification": "ORIGINAL_CANONICAL_CORE",
-    "input": {"original_direction": "UP", "left": [3, 7], "center": [1, 4], "right": [2, 6], "original_gap_closed": false, "second_sequence_fractal": "BOTTOM"},
+    "input": {"original_direction": "UP", "left": [3, 7], "center": [1, 4], "right": [2, 6], "second_sequence_fractal": "BOTTOM"},
     "expected": {"case": "SECOND_CASE_CONFIRMED"},
-    "reason_code": "ORIGINAL_GAP_CLOSURE_NOT_REQUIRED"
+    "reason_code": "SECOND_SEQUENCE_FRACTAL_CONFIRMED"
   },
   {
-    "fixture_id": "CASE2-NEW-EXTREME-INVALIDATE-001",
+    "fixture_id": "CASE2-UP-STRICT-NEW-HIGH-INVALIDATE-001",
     "rule_ids": ["DS-CASE2-FAIL"],
     "classification": "ORIGINAL_CANONICAL_CORE",
-    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "original_direction_new_extreme": true, "new_extreme_observed_at_bar": 20, "secondary_confirmed_at_bar": null},
+    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 11, "pending_endpoint_bar_index": 10, "observed_at_bar_index": 20, "secondary_confirmed_at_bar": null},
     "expected": {"case": "INVALIDATED", "original_segment_continues": true},
     "reason_code": "PENDING_DESTRUCTION_INVALIDATED"
+  },
+  {
+    "fixture_id": "CASE2-DOWN-STRICT-NEW-LOW-INVALIDATE-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "DOWN", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 9, "pending_endpoint_bar_index": 10, "observed_at_bar_index": 20, "secondary_confirmed_at_bar": null},
+    "expected": {"case": "INVALIDATED"},
+    "reason_code": "PENDING_DESTRUCTION_INVALIDATED"
+  },
+  {
+    "fixture_id": "CASE2-UP-EQUAL-HIGH-STAYS-PENDING-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 10, "pending_endpoint_bar_index": 10, "observed_at_bar_index": 20, "secondary_confirmed_at_bar": null},
+    "expected": {"case": "SECOND_CASE_PENDING"},
+    "reason_code": "ORIGINAL_DIRECTION_EXTREME_NOT_STRICT"
+  },
+  {
+    "fixture_id": "CASE2-DOWN-EQUAL-LOW-STAYS-PENDING-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "DOWN", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 10, "pending_endpoint_bar_index": 10, "observed_at_bar_index": 20, "secondary_confirmed_at_bar": null},
+    "expected": {"case": "SECOND_CASE_PENDING"},
+    "reason_code": "ORIGINAL_DIRECTION_EXTREME_NOT_STRICT"
+  },
+  {
+    "fixture_id": "CASE2-WRONG-DIRECTION-STAYS-PENDING-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 9, "pending_endpoint_bar_index": 10, "observed_at_bar_index": 20, "secondary_confirmed_at_bar": null},
+    "expected": {"case": "SECOND_CASE_PENDING"},
+    "reason_code": "ORIGINAL_DIRECTION_EXTREME_NOT_STRICT"
+  },
+  {
+    "fixture_id": "CASE2-EXTREME-BAR-ORDER-REJECT-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 11, "pending_endpoint_bar_index": 20, "observed_at_bar_index": 20, "secondary_confirmed_at_bar": null},
+    "expected": {"accepted": false},
+    "reason_code": "extreme evidence must follow pending endpoint"
+  },
+  {
+    "fixture_id": "CASE2-NEGATIVE-BAR-REJECT-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 11, "pending_endpoint_bar_index": -1, "observed_at_bar_index": 20, "secondary_confirmed_at_bar": null},
+    "expected": {"accepted": false},
+    "reason_code": "extreme evidence bars must be nonnegative integers"
   },
   {
     "fixture_id": "CASE2-SECOND-SEQUENCE-INCLUSION-001",
     "rule_ids": ["DS-CASE2"],
     "classification": "ORIGINAL_CANONICAL_CORE",
-    "input": {"second_feature_sequence": true, "a": [1, 5], "b": [2, 4], "seed": "UP", "normal_inclusion_required": true},
-    "expected": {"normal_inclusion_applied": true},
+    "input": {"sequence_boundary_nature": "SECOND_FEATURE_SEQUENCE", "a": [1, 5], "b": [2, 4], "seed": "UP"},
+    "expected": {"merged": [2, 5], "source_stroke_logical_ids": ["stroke:a", "stroke:b"]},
     "reason_code": "SECOND_SEQUENCE_NORMAL_INCLUSION"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-UNRELATED-ENDPOINT-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "unrelated_left_start"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_ENDPOINT_NOT_ADJACENT"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-DISCONNECTED-LEFT-CENTER-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "disconnect_left_center"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_LEFT_CENTER_DISCONNECTED"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-DISCONNECTED-CENTER-RIGHT-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "disconnect_center_right"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_CENTER_RIGHT_DISCONNECTED"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-ID-MISMATCH-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "sequence_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_ID_MISMATCH"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-NONNORMALIZED-ELEMENT-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "nonnormalized_center"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_NORMALIZATION_REQUIRED"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-DUPLICATE-ELEMENT-ID-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "duplicate_element_id"},
+    "expected": {"accepted": false},
+    "reason_code": "DUPLICATE_SECOND_SEQUENCE_ELEMENT_ID"
   }
 ]

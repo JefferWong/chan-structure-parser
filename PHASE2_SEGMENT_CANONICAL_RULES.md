@@ -88,7 +88,10 @@ theory. The accompanying reference oracle is stateless and non-production.
 - input: Primary fractal/gap evidence and later second-sequence fractal evidence.
 - output: `SECOND_CASE_PENDING` or `SECOND_CASE_CONFIRMED`.
 - fail_closed_condition: Missing primary fractal, missing required second
-  fractal, or unnormalized second sequence.
+  fractal, unnormalized elements, duplicate element identity, sequence mismatch,
+  or disconnected endpoints. The three immutable second-sequence elements must
+  start at the pending endpoint, connect left-to-center-to-right, retain unique
+  provenance, and bind pending endpoint provenance into the left element.
 - fixture_ids: `CASE2-UP-PENDING-001`, `CASE2-DOWN-PENDING-001`,
   `CASE2-SECOND-FRACTAL-CONFIRM-001`,
   `CASE2-GAP-NOT-CLOSED-CONFIRM-001`,
@@ -112,13 +115,23 @@ theory. The accompanying reference oracle is stateless and non-production.
 - classification: `ORIGINAL_CANONICAL_CORE`
 - statement: Before the second-sequence fractal confirms, a strict new extreme
   in the original direction invalidates the pending endpoint and the original
-  segment continues.
-- input: Pending second case, pending endpoint, original direction, and latest
-  strict-extreme evidence.
+  segment continues. Strictness is calculated from direction and finite prices:
+  UP requires `observed > pending`, DOWN requires `observed < pending`.
+- input: Pending second case plus immutable pending endpoint ID and unique
+  provenance, direction, pending/observed prices, pending/observed nonnegative
+  bar indexes, and optional secondary-confirmation bar.
 - output: `PENDING_DESTRUCTION_INVALIDATED`.
-- fail_closed_condition: Equality treated as a strict extreme, or confirmation
-  of the hypothetical reverse segment after invalidation.
-- fixture_ids: `CASE2-NEW-EXTREME-INVALIDATE-001`
+- fail_closed_condition: Caller-supplied boolean conclusions, nonfinite prices,
+  invalid or non-increasing bar order, endpoint/provenance/direction mismatch,
+  equality treated as strict, or secondary confirmation at/before the observed
+  extreme.
+- fixture_ids: `CASE2-UP-STRICT-NEW-HIGH-INVALIDATE-001`,
+  `CASE2-DOWN-STRICT-NEW-LOW-INVALIDATE-001`,
+  `CASE2-UP-EQUAL-HIGH-STAYS-PENDING-001`,
+  `CASE2-DOWN-EQUAL-LOW-STAYS-PENDING-001`,
+  `CASE2-WRONG-DIRECTION-STAYS-PENDING-001`,
+  `CASE2-EXTREME-BAR-ORDER-REJECT-001`,
+  `CASE2-NEGATIVE-BAR-REJECT-001`
 
 ### DS-CASE1-FAIL
 
@@ -247,8 +260,9 @@ theory. The accompanying reference oracle is stateless and non-production.
   Endpoint time is never used to backfill confirmation.
 - input: Endpoint bar and all right-element source visibility bars.
 - output: Maximum visibility bar.
-- fail_closed_condition: Missing visibility evidence or result before endpoint.
-- fixture_ids: `FREEZE-APPEND-001`
+- fail_closed_condition: Missing visibility evidence, bool/float/negative bar
+  index, or result before endpoint.
+- fixture_ids: `TIMING-NO-BACKFILL-001`
 
 ### EQ-WINNER-001
 
@@ -266,16 +280,24 @@ theory. The accompanying reference oracle is stateless and non-production.
 
 - rule_id: `EQ-LIFECYCLE-001`
 - classification: `ENGINEERING_DETERMINISM_V1`
-- statement: Minimum windows are `CANDIDATE`; incomplete evidence is
-  `PROVISIONAL`; complete case evidence is `CONFIRMED`; never-confirmed failures
-  are `INVALIDATED`; a confirmed active segment terminated by a newly confirmed
-  reverse segment becomes `REPLACED`, with `replaced_by` set to the reverse
-  segment logical ID. No `DESTROYED` state is introduced.
-- input: Prior confirmation state, evidence state, and optional reverse logical ID.
+- statement: A minimum window with no later evidence is `CANDIDATE`; a candidate
+  with explicit incomplete evidence is `PROVISIONAL`; complete case evidence is
+  `CONFIRMED`; never-confirmed failures are `INVALIDATED`; a confirmed active
+  segment terminated by a newly confirmed reverse segment becomes `REPLACED`,
+  with `replaced_by` set to the reverse segment logical ID. No lifecycle object
+  exists without a minimum candidate window, and no `DESTROYED` state is added.
+- input: Candidate-window presence, explicit provisional/complete/invalidated
+  evidence, prior confirmation state, and optional confirmed reverse logical ID.
 - output: Existing lifecycle state and optional `replaced_by`.
-- fail_closed_condition: Invalidating a confirmed segment, replacing an
-  unconfirmed candidate, or missing replacement logical ID.
-- fixture_ids: `LIFECYCLE-INVALIDATED-001`, `LIFECYCLE-REPLACED-001`
+- fail_closed_condition: Evidence without a candidate, attempting a lifecycle
+  with no candidate/evidence, contradictory evidence flags, invalidating a
+  confirmed segment, replacing an unconfirmed candidate, or an incomplete
+  confirmed-reverse-ID pair.
+- fixture_ids: `LIFECYCLE-INVALIDATED-001`, `LIFECYCLE-REPLACED-001`,
+  `LIFECYCLE-NO-CANDIDATE-REJECT-001`, `LIFECYCLE-CANDIDATE-001`,
+  `LIFECYCLE-PROVISIONAL-001`,
+  `LIFECYCLE-EVIDENCE-WITHOUT-CANDIDATE-REJECT-001`,
+  `LIFECYCLE-CONTRADICTORY-EVIDENCE-REJECT-001`
 
 ### EQ-FREEZE-001
 
@@ -288,7 +310,7 @@ theory. The accompanying reference oracle is stateless and non-production.
 - output: Frozen-prefix constraint for a future implementation.
 - fail_closed_condition: Silent prefix rewrite, event deletion, or earlier
   confirmation-time rewrite.
-- fixture_ids: `TIMING-NO-BACKFILL-001`
+- fixture_ids: `FREEZE-APPEND-001`
 
 ## Decision flow
 
@@ -301,7 +323,20 @@ A strict new original-direction extreme invalidates that pending boundary.
 
 Pen break and canonical segment destruction remain distinct. Canonical
 destruction is evidence classification; `REPLACED` is a later engineering
-lifecycle mapping for an already confirmed object.
+lifecycle mapping for an already confirmed object. The primary classifier accepts
+only a complete three-element fractal window and gap evidence; the separate
+pen-break oracle handles provisional one-pen evidence, so no meaningless
+`pen_break_observed` flag exists on primary classification.
+
+All public bar indexes are exact, nonnegative integers: bool, float, and negative
+values fail closed. Extreme observation must follow its pending endpoint, and
+confirmation cannot precede its endpoint. Equality at the pending price and
+movement in the wrong direction remain `SECOND_CASE_PENDING`.
+
+A second sequence is not established by caller booleans. Its three immutable
+elements must share the pending sequence ID, be individually normalized, connect
+by endpoint identity, begin at the pending endpoint, preserve unique provenance,
+and include pending endpoint provenance in the left element.
 
 ## Fail-closed profile and fixtures
 
@@ -313,7 +348,8 @@ disabled, and every prohibition enabled.
 The five JSON fixture files under `tests/fixtures/segment_rules/` form the
 versioned decision table. Every fixture records `rule_ids`, `classification`,
 `input`, `expected`, and `reason_code`; contract tests require all 34 requested
-fixture IDs plus dedicated SG and frozen-prefix cases, 36 total.
+fixture IDs plus review-hardening cases for strict extremes, lifecycle gaps, and
+second-sequence continuity, 53 total.
 
 ## Explicit non-implementation gates
 
