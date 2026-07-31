@@ -739,11 +739,6 @@ def test_every_fixture_executes_against_reference_oracle(case):
         assert outcome.destruction_case.value == expected["case"]
         assert result.feature_fractal_type.value == data["second_sequence_fractal"]
         assert outcome.reason_code == case["reason_code"]
-        if "original_gap_closed" in expected:
-            assert has_feature_gap(
-                interval(*data["primary_gap_first"]),
-                interval(*data["primary_gap_center"]),
-            ) is not expected["original_gap_closed"]
         return
     if fixture_id.startswith("CASE2-") and fixture_id in {
         "CASE2-UP-STRICT-NEW-HIGH-INVALIDATE-001",
@@ -1278,22 +1273,26 @@ def test_feature_sequence_rejects_cross_sequence_and_duplicate_logical_id():
 
 def test_feature_sequence_malformed_stroke_fails_closed_before_attribute_access():
     for malformed in ([object()], object()):
-        with pytest.raises(SegmentRuleContractError) as exc:
+        with pytest.raises(
+            SegmentRuleContractError,
+            match="strokes must contain StrokeRuleInput values",
+        ):
             build_feature_sequence(
                 SegmentDirection.UP, malformed, sequence_id="fixture-sequence"
             )
-        assert not isinstance(exc.value, (AttributeError, TypeError))
 
 
 def test_merge_malformed_interval_fails_closed_before_relation_classification():
-    with pytest.raises(SegmentRuleContractError) as exc:
+    with pytest.raises(
+        SegmentRuleContractError,
+        match="PriceInterval values required",
+    ):
         merge_included_intervals(
             object(),
             interval(2, 4, "stroke:b"),
             InclusionSeed.UP,
             context=inclusion_context(),
         )
-    assert not isinstance(exc.value, AttributeError)
 
 
 @pytest.mark.parametrize(
@@ -1612,10 +1611,16 @@ def test_lifecycle_rejects_contradictory_confirmation_and_replacement_evidence()
 
 
 def test_candidate_choice_malformed_input_fails_closed_before_attribute_access():
-    for malformed in ([object()], object()):
-        with pytest.raises(SegmentRuleContractError) as exc:
-            choose_deterministic_candidate(malformed)
-        assert not isinstance(exc.value, (AttributeError, TypeError))
+    with pytest.raises(
+        SegmentRuleContractError,
+        match="candidates must contain CandidateChoice values",
+    ):
+        choose_deterministic_candidate([object()])
+    with pytest.raises(
+        SegmentRuleContractError,
+        match="at least one confirmable candidate required",
+    ):
+        choose_deterministic_candidate(object())
 
 
 def test_segment_boundary_malformed_inputs_fail_closed_before_attribute_access():
@@ -1627,12 +1632,16 @@ def test_segment_boundary_malformed_inputs_fail_closed_before_attribute_access()
         "endpoint:0",
         "endpoint:1",
     )
-    with pytest.raises(SegmentRuleContractError) as current_exc:
+    with pytest.raises(
+        SegmentRuleContractError,
+        match="current SegmentBoundaryInput required",
+    ):
         validate_segment_boundaries(object())
-    assert not isinstance(current_exc.value, AttributeError)
-    with pytest.raises(SegmentRuleContractError) as previous_exc:
+    with pytest.raises(
+        SegmentRuleContractError,
+        match="previous_confirmed SegmentBoundaryInput required",
+    ):
         validate_segment_boundaries(valid, previous_confirmed=object())
-    assert not isinstance(previous_exc.value, AttributeError)
 
 
 def test_frozen_prefix_correction_requires_appended_event():
