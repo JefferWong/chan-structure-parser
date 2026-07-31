@@ -123,6 +123,24 @@ def test_top_level_and_prohibition_changes_fail_closed(path, value):
 
 
 
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("segment",), None),
+        (("segment", "confirmation"), None),
+        (("segment", "identity"), None),
+    ],
+)
+def test_non_mapping_contract_sections_fail_closed(path, value):
+    loaded = profile()
+    target = loaded
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    with pytest.raises(SegmentContractError):
+        SegmentContractValidator(loaded)
+
+
 def test_unknown_segment_option_fails_closed():
     loaded = profile()
     loaded["segment"]["allow_gap_without_destruction"] = True

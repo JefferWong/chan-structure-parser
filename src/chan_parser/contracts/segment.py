@@ -96,6 +96,10 @@ class SegmentContractValidator:
                 )
 
         segment = profile["segment"]
+        if not isinstance(segment, dict):
+            raise SegmentContractError(
+                "segment contract section must be a mapping"
+            )
         allowed_segment_keys = {
             "mode",
             "contract_only",
@@ -119,6 +123,10 @@ class SegmentContractValidator:
             )
 
         confirmation = segment.get("confirmation", {})
+        if not isinstance(confirmation, dict):
+            raise SegmentContractError(
+                "segment confirmation contract section must be a mapping"
+            )
         if set(confirmation) != {
             "require_explicit_destruction_evidence",
             "allow_implicit_confirmation",
@@ -128,6 +136,10 @@ class SegmentContractValidator:
             )
 
         identity = segment.get("identity", {})
+        if not isinstance(identity, dict):
+            raise SegmentContractError(
+                "segment identity contract section must be a mapping"
+            )
         if set(identity) != {"candidate_scheme", "evidence_scheme"}:
             raise SegmentContractError(
                 "unsupported segment identity contract keys"
