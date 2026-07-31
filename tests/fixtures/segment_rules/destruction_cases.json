@@ -91,8 +91,8 @@
     "fixture_id": "CASE2-GAP-NOT-CLOSED-CONFIRM-001",
     "rule_ids": ["DS-CASE2"],
     "classification": "ORIGINAL_CANONICAL_CORE",
-    "input": {"original_direction": "UP", "left": [3, 7], "center": [1, 4], "right": [2, 6], "second_sequence_fractal": "BOTTOM"},
-    "expected": {"case": "SECOND_CASE_CONFIRMED"},
+    "input": {"original_direction": "UP", "primary_gap_first": [1, 2], "primary_gap_center": [3, 10], "left": [13, 17], "center": [11, 14], "right": [12, 16], "second_sequence_fractal": "BOTTOM"},
+    "expected": {"case": "SECOND_CASE_CONFIRMED", "original_gap_closed": false},
     "reason_code": "SECOND_SEQUENCE_FRACTAL_CONFIRMED"
   },
   {

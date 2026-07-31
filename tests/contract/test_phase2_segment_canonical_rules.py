@@ -700,6 +700,11 @@ def test_every_fixture_executes_against_reference_oracle(case):
         "CASE2-SECOND-FRACTAL-CONFIRM-001",
         "CASE2-GAP-NOT-CLOSED-CONFIRM-001",
     }:
+        if "original_gap_closed" in expected:
+            assert has_feature_gap(
+                interval(*data["primary_gap_first"]),
+                interval(*data["primary_gap_center"]),
+            ) is not expected["original_gap_closed"]
         result = classify_secondary_confirmation(
             *secondary_elements(
                 tuple(data["left"]),
@@ -717,6 +722,11 @@ def test_every_fixture_executes_against_reference_oracle(case):
         assert outcome.destruction_case.value == expected["case"]
         assert result.feature_fractal_type.value == data["second_sequence_fractal"]
         assert outcome.reason_code == case["reason_code"]
+        if "original_gap_closed" in expected:
+            assert has_feature_gap(
+                interval(*data["primary_gap_first"]),
+                interval(*data["primary_gap_center"]),
+            ) is not expected["original_gap_closed"]
         return
     if fixture_id.startswith("CASE2-") and fixture_id in {
         "CASE2-UP-STRICT-NEW-HIGH-INVALIDATE-001",
@@ -1786,8 +1796,8 @@ def test_secondary_confirmation_rejects_invalid_context_type():
 
 
 def test_pending_invalidation_rejects_invalid_context_type():
+    valid_context = pending_context()
     with pytest.raises(SegmentRuleContractError, match="context required"):
-        valid_context = pending_context()
         classify_pending_second_case_invalidation(
             None,
             extreme_evidence=extreme_evidence(valid_context, 11, 20),

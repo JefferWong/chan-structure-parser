@@ -59,11 +59,17 @@ def test_rule_profile_explicitly_disables_implementation_and_integration():
 
 def test_reference_oracle_has_no_engine_parser_segment_or_event_dependencies():
     tree = ast.parse(ORACLE.read_text(encoding="utf-8"))
-    imported_modules = {
-        node.module or ""
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
+    imported_modules = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = f'{"." * node.level}{node.module or ""}'
+        imported_modules.add(module)
+        imported_modules.update(alias.name for alias in node.names)
+        imported_modules.update(
+            f"{module}.{alias.name}" if module else alias.name
+            for alias in node.names
+        )
     imported_modules.update(
         alias.name
         for node in ast.walk(tree)
@@ -83,7 +89,9 @@ def test_reference_oracle_has_no_engine_parser_segment_or_event_dependencies():
         node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
     }
     function_names = {
-        node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     assert "Segment" not in class_names
     assert not any(name.endswith("Engine") for name in class_names)
