@@ -38,7 +38,8 @@ theory. The accompanying reference oracle is stateless and non-production.
 - output: Permission to evaluate inclusion within one sequence.
 - fail_closed_condition: Different sequence, candidate direction, or confirmed
   boundary side.
-- fixture_ids: `FS-CROSS-SEQUENCE-REJECT-001`
+- fixture_ids: `FS-CROSS-SEQUENCE-REJECT-001`,
+  `PRIMARY-SEQUENCE-ID-MISMATCH-REJECT-001`
 
 ### FS-003
 
@@ -49,7 +50,12 @@ theory. The accompanying reference oracle is stateless and non-production.
 - input: One raw feature sequence and its inclusion decisions.
 - output: Standard feature elements with complete source logical IDs.
 - fail_closed_condition: Lost, duplicated, or reordered provenance.
-- fixture_ids: `INCLUSION-PROVENANCE-001`
+- fixture_ids: `INCLUSION-PROVENANCE-001`,
+  `PRIMARY-DUPLICATE-ELEMENT-ID-REJECT-001`,
+  `PRIMARY-NONNORMALIZED-ELEMENT-REJECT-001`,
+  `PRIMARY-EMPTY-PROVENANCE-REJECT-001`,
+  `PRIMARY-DUPLICATE-PROVENANCE-REJECT-001`,
+  `PRIMARY-PROVENANCE-MISMATCH-REJECT-001`
 
 ### FR-001
 
@@ -91,7 +97,9 @@ theory. The accompanying reference oracle is stateless and non-production.
   fractal, unnormalized elements, duplicate element identity, sequence mismatch,
   or disconnected endpoints. The three immutable second-sequence elements must
   start at the pending endpoint, connect left-to-center-to-right, retain unique
-  provenance, and bind pending endpoint provenance into the left element.
+  provenance, and bind by shared endpoint identity. The original canonical core
+  requires the second sequence to start at the shared endpoint; endpoint IDs and
+  provenance containers are engineering evidence representations.
 - fixture_ids: `CASE2-UP-PENDING-001`, `CASE2-DOWN-PENDING-001`,
   `CASE2-SECOND-FRACTAL-CONFIRM-001`,
   `CASE2-GAP-NOT-CLOSED-CONFIRM-001`,
@@ -117,14 +125,15 @@ theory. The accompanying reference oracle is stateless and non-production.
   in the original direction invalidates the pending endpoint and the original
   segment continues. Strictness is calculated from direction and finite prices:
   UP requires `observed > pending`, DOWN requires `observed < pending`.
-- input: Pending second case plus immutable pending endpoint ID and unique
-  provenance, direction, pending/observed prices, pending/observed nonnegative
-  bar indexes, and optional secondary-confirmation bar.
+- input: Pending second case with one immutable endpoint evidence object
+  containing endpoint ID, defining-stroke provenance, pending price, and pending
+  bar; separate observed price/bar/provenance evidence; and optional
+  secondary-confirmation bar.
 - output: `PENDING_DESTRUCTION_INVALIDATED`.
-- fail_closed_condition: Caller-supplied boolean conclusions, nonfinite prices,
-  invalid or non-increasing bar order, endpoint/provenance/direction mismatch,
-  equality treated as strict, or secondary confirmation at/before the observed
-  extreme.
+- fail_closed_condition: Caller-supplied boolean conclusions or duplicate
+  pending price/bar inputs, nonfinite prices, invalid or non-increasing bar
+  order, equality treated as strict, or secondary confirmation at/before the
+  observed extreme.
 - fixture_ids: `CASE2-UP-STRICT-NEW-HIGH-INVALIDATE-001`,
   `CASE2-DOWN-STRICT-NEW-LOW-INVALIDATE-001`,
   `CASE2-UP-EQUAL-HIGH-STAYS-PENDING-001`,
@@ -229,14 +238,22 @@ theory. The accompanying reference oracle is stateless and non-production.
 - statement: The last pre-turn feature and first post-turn feature in first-case
   evaluation are different-nature boundary elements and never merge. Later
   same-side elements may merge. A second feature sequence uses normal inclusion.
-- input: Included elements plus boundary-side and sequence-kind metadata.
+  For deterministic evidence representation, the pending endpoint is one
+  immutable object holding its ID, defining-stroke IDs, price, and bar. Primary
+  and secondary windows use immutable standard elements with sequence identity,
+  endpoint continuity, normalization, and complete provenance.
+- input: Included elements plus boundary-side and sequence-kind metadata, or a
+  structurally bound three-element standard-feature window.
 - output: Merge permission or
   `HYPOTHETICAL_BOUNDARY_DIFFERENT_NATURE`.
-- fail_closed_condition: Cross-boundary first-case merge or suppressed
-  second-sequence normalization.
+- fail_closed_condition: Cross-boundary first-case merge, suppressed
+  second-sequence normalization, duplicate pending baselines, bare intervals,
+  non-adjacent endpoints, cross-sequence elements, or incomplete provenance.
 - fixture_ids: `INCLUSION-FIRST-BOUNDARY-NOMERGE-001`,
   `INCLUSION-SECOND-SEQUENCE-MERGE-001`,
-  `CASE2-SECOND-SEQUENCE-INCLUSION-001`
+  `CASE2-SECOND-SEQUENCE-INCLUSION-001`,
+  `PRIMARY-LEFT-CENTER-DISCONNECTED-REJECT-001`,
+  `PRIMARY-CENTER-RIGHT-DISCONNECTED-REJECT-001`
 
 ### EQ-FRACTAL-001
 
@@ -316,7 +333,9 @@ theory. The accompanying reference oracle is stateless and non-production.
 
 The reference oracle first normalizes immutable closed intervals, applies
 same-sequence inclusion only after a strict seed exists, and classifies only a
-strict three-element feature fractal. A direction-compatible primary fractal
+strict three-element standard-feature window. Primary and secondary classifiers
+accept only adjacent, normalized elements from one declared sequence with
+complete, non-overlapping provenance. A direction-compatible primary fractal
 without a first-to-center gap yields first-case evidence. With a gap it remains
 second-case pending until the required reverse-candidate feature fractal appears.
 A strict new original-direction extreme invalidates that pending boundary.
@@ -329,14 +348,18 @@ pen-break oracle handles provisional one-pen evidence, so no meaningless
 `pen_break_observed` flag exists on primary classification.
 
 All public bar indexes are exact, nonnegative integers: bool, float, and negative
-values fail closed. Extreme observation must follow its pending endpoint, and
+values fail closed. Pending price and bar exist only in the immutable
+`PendingEndpointEvidence`; strict-extreme evidence cannot resubmit or replace
+that baseline. Extreme observation must follow its pending endpoint, and
 confirmation cannot precede its endpoint. Equality at the pending price and
 movement in the wrong direction remain `SECOND_CASE_PENDING`.
 
 A second sequence is not established by caller booleans. Its three immutable
 elements must share the pending sequence ID, be individually normalized, connect
 by endpoint identity, begin at the pending endpoint, preserve unique provenance,
-and include pending endpoint provenance in the left element.
+and match the secondary context provenance. Endpoint defining-stroke IDs are
+engineering audit evidence and need not occur in the left element provenance;
+the original theory does not prescribe such a provenance coupling.
 
 ## Fail-closed profile and fixtures
 
@@ -347,9 +370,10 @@ disabled, and every prohibition enabled.
 
 The five JSON fixture files under `tests/fixtures/segment_rules/` form the
 versioned decision table. Every fixture records `rule_ids`, `classification`,
-`input`, `expected`, and `reason_code`; contract tests require all 34 requested
-fixture IDs plus review-hardening cases for strict extremes, lifecycle gaps, and
-second-sequence continuity, 53 total.
+`input`, `expected`, and `reason_code`. The original fixture set contained 36
+rows; review hardening expanded the executable table to 61 rows, including
+strict-extreme, lifecycle, primary structural, and second-sequence continuity
+gates.
 
 ## Explicit non-implementation gates
 

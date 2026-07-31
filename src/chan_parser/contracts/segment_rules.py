@@ -205,12 +205,42 @@ class InclusionContext:
 
 
 @dataclass(frozen=True)
+class PendingEndpointEvidence:
+    endpoint_id: str
+    defining_stroke_logical_ids: tuple[str, ...]
+    price: float
+    bar_index: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.endpoint_id) is not str
+            or not self.endpoint_id
+            or type(self.defining_stroke_logical_ids) is not tuple
+            or not self.defining_stroke_logical_ids
+            or any(
+                type(value) is not str or not value
+                for value in self.defining_stroke_logical_ids
+            )
+        ):
+            raise SegmentRuleContractError("pending endpoint identity required")
+        if len(self.defining_stroke_logical_ids) != len(
+            set(self.defining_stroke_logical_ids)
+        ):
+            raise SegmentRuleContractError("duplicate pending endpoint provenance")
+        if not _is_finite_number(self.price):
+            raise SegmentRuleContractError("pending endpoint price must be finite")
+        if type(self.bar_index) is not int or self.bar_index < 0:
+            raise SegmentRuleContractError(
+                "pending endpoint bar must be a nonnegative integer"
+            )
+
+
+@dataclass(frozen=True)
 class PendingSecondCaseContext:
     primary_case: DestructionCase
     original_direction: SegmentDirection
     sequence_id: str
-    pending_endpoint_id: str
-    pending_endpoint_source_logical_ids: tuple[str, ...]
+    pending_endpoint: PendingEndpointEvidence
 
     def __post_init__(self) -> None:
         if (
@@ -218,76 +248,42 @@ class PendingSecondCaseContext:
             or not isinstance(self.original_direction, SegmentDirection)
             or type(self.sequence_id) is not str
             or not self.sequence_id
+            or not isinstance(self.pending_endpoint, PendingEndpointEvidence)
         ):
-            raise SegmentRuleContractError("valid primary case and sequence ID required")
-        if (
-            type(self.pending_endpoint_id) is not str
-            or not self.pending_endpoint_id
-            or type(self.pending_endpoint_source_logical_ids) is not tuple
-            or not self.pending_endpoint_source_logical_ids
-            or any(
-                type(value) is not str or not value
-                for value in self.pending_endpoint_source_logical_ids
+            raise SegmentRuleContractError(
+                "valid primary case, sequence ID, and pending endpoint required"
             )
-        ):
-            raise SegmentRuleContractError("secondary endpoint IDs required")
-        if len(self.pending_endpoint_source_logical_ids) != len(
-            set(self.pending_endpoint_source_logical_ids)
-        ):
-            raise SegmentRuleContractError("duplicate pending endpoint provenance")
 
 
 @dataclass(frozen=True)
 class OriginalDirectionExtremeEvidence:
-    original_direction: SegmentDirection
-    pending_endpoint_id: str
-    pending_endpoint_source_logical_ids: tuple[str, ...]
-    pending_endpoint_price: float
     observed_extreme_price: float
-    pending_endpoint_bar_index: int
     observed_at_bar_index: int
+    observed_source_stroke_logical_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.original_direction, SegmentDirection):
-            raise SegmentRuleContractError("valid original direction required")
-        if type(self.pending_endpoint_id) is not str or not self.pending_endpoint_id:
-            raise SegmentRuleContractError("extreme pending endpoint ID required")
         if (
-            type(self.pending_endpoint_source_logical_ids) is not tuple
-            or not self.pending_endpoint_source_logical_ids
+            type(self.observed_source_stroke_logical_ids) is not tuple
+            or not self.observed_source_stroke_logical_ids
             or any(
                 type(value) is not str or not value
-                for value in self.pending_endpoint_source_logical_ids
+                for value in self.observed_source_stroke_logical_ids
             )
-            or len(self.pending_endpoint_source_logical_ids)
-            != len(set(self.pending_endpoint_source_logical_ids))
+            or len(self.observed_source_stroke_logical_ids)
+            != len(set(self.observed_source_stroke_logical_ids))
         ):
             raise SegmentRuleContractError(
-                "extreme pending endpoint provenance must be unique"
+                "observed extreme provenance must be unique"
             )
-        if (
-            not _is_finite_number(self.pending_endpoint_price)
-            or not _is_finite_number(self.observed_extreme_price)
-        ):
+        if not _is_finite_number(self.observed_extreme_price):
             raise SegmentRuleContractError("extreme evidence prices must be finite")
         if (
-            type(self.pending_endpoint_bar_index) is not int
-            or type(self.observed_at_bar_index) is not int
-            or self.pending_endpoint_bar_index < 0
+            type(self.observed_at_bar_index) is not int
             or self.observed_at_bar_index < 0
         ):
             raise SegmentRuleContractError(
                 "extreme evidence bars must be nonnegative integers"
             )
-        if self.observed_at_bar_index <= self.pending_endpoint_bar_index:
-            raise SegmentRuleContractError(
-                "extreme evidence must follow pending endpoint"
-            )
-
-    def is_strict_original_direction_extreme(self) -> bool:
-        if self.original_direction == SegmentDirection.UP:
-            return self.observed_extreme_price > self.pending_endpoint_price
-        return self.observed_extreme_price < self.pending_endpoint_price
 
 
 @dataclass(frozen=True)
@@ -317,6 +313,24 @@ class FeatureElementRuleInput:
 
 
 @dataclass(frozen=True)
+class PrimarySequenceContext:
+    candidate_direction: SegmentDirection
+    sequence_id: str
+    normalized_source_logical_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.candidate_direction, SegmentDirection)
+            or type(self.sequence_id) is not str
+            or not self.sequence_id
+        ):
+            raise SegmentRuleContractError(
+                "valid primary direction and sequence ID required"
+            )
+        _validate_normalized_provenance(self.normalized_source_logical_ids)
+
+
+@dataclass(frozen=True)
 class SecondarySequenceContext:
     pending: PendingSecondCaseContext
     normalized_source_logical_ids: tuple[str, ...]
@@ -324,19 +338,7 @@ class SecondarySequenceContext:
     def __post_init__(self) -> None:
         if not isinstance(self.pending, PendingSecondCaseContext):
             raise SegmentRuleContractError("pending second-case context required")
-        if (
-            type(self.normalized_source_logical_ids) is not tuple
-            or not self.normalized_source_logical_ids
-            or any(
-                type(value) is not str or not value
-                for value in self.normalized_source_logical_ids
-            )
-        ):
-            raise SegmentRuleContractError("normalized provenance tuple required")
-        if len(self.normalized_source_logical_ids) != len(
-            set(self.normalized_source_logical_ids)
-        ):
-            raise SegmentRuleContractError("duplicate normalized provenance")
+        _validate_normalized_provenance(self.normalized_source_logical_ids)
 
 
 @dataclass(frozen=True)
@@ -441,10 +443,22 @@ def validate_segment_canonical_rules_profile(profile: Mapping[str, Any]) -> None
 
 
 def _is_finite_number(value: object) -> bool:
-    return (
-        type(value) in {int, float}
-        and math.isfinite(value)
-    )
+    if type(value) is int:
+        return True
+    if type(value) is float:
+        return math.isfinite(value)
+    return False
+
+
+def _validate_normalized_provenance(value: object) -> None:
+    if (
+        type(value) is not tuple
+        or not value
+        or any(type(item) is not str or not item for item in value)
+    ):
+        raise SegmentRuleContractError("normalized provenance tuple required")
+    if len(value) != len(set(value)):
+        raise SegmentRuleContractError("duplicate normalized provenance")
 
 
 def _validate_exact_mapping(
@@ -615,17 +629,26 @@ def classify_strict_feature_fractal(
 
 
 def classify_primary_destruction_case(
-    candidate_direction: SegmentDirection,
-    left: PriceInterval,
-    center: PriceInterval,
-    right: PriceInterval,
+    left: FeatureElementRuleInput,
+    center: FeatureElementRuleInput,
+    right: FeatureElementRuleInput,
+    *,
+    context: PrimarySequenceContext,
 ) -> OracleDecision:
-    if not isinstance(candidate_direction, SegmentDirection):
-        raise SegmentRuleContractError("valid candidate direction required")
-    fractal_type = classify_strict_feature_fractal(left, center, right)
+    if not isinstance(context, PrimarySequenceContext):
+        raise SegmentRuleContractError("primary sequence context required")
+    intervals = _validate_standard_element_window(
+        left,
+        center,
+        right,
+        sequence_id=context.sequence_id,
+        normalized_source_logical_ids=context.normalized_source_logical_ids,
+        reason_prefix="PRIMARY",
+    )
+    fractal_type = classify_strict_feature_fractal(*intervals)
     required = (
         FeatureFractalType.TOP
-        if candidate_direction == SegmentDirection.UP
+        if context.candidate_direction == SegmentDirection.UP
         else FeatureFractalType.BOTTOM
     )
     if fractal_type != required:
@@ -634,18 +657,22 @@ def classify_primary_destruction_case(
             "FEATURE_FRACTAL_REQUIRED",
             fractal_type,
         )
-    if has_feature_gap(left, center):
+    if has_feature_gap(left.interval, center.interval):
         return OracleDecision(
             DestructionCase.SECOND_CASE_PENDING,
             "SECOND_CASE_GAP_PENDING",
             fractal_type,
-            center.high if required == FeatureFractalType.TOP else center.low,
+            center.interval.high
+            if required == FeatureFractalType.TOP
+            else center.interval.low,
         )
     return OracleDecision(
         DestructionCase.FIRST_CASE,
         "FIRST_CASE_NO_GAP_CONFIRMED",
         fractal_type,
-        center.high if required == FeatureFractalType.TOP else center.low,
+        center.interval.high
+        if required == FeatureFractalType.TOP
+        else center.interval.low,
     )
 
 
@@ -665,38 +692,16 @@ def classify_secondary_confirmation(
         raise SegmentRuleContractError("SECOND_CASE_PENDING evidence required")
     if context.pending.original_direction != original_direction:
         raise SegmentRuleContractError("SECOND_CASE_DIRECTION_MISMATCH")
-    elements = (left, center, right)
-    if any(not isinstance(item, FeatureElementRuleInput) for item in elements):
-        raise SegmentRuleContractError("three feature elements required")
-    logical_ids = tuple(item.logical_id for item in elements)
-    if len(logical_ids) != len(set(logical_ids)):
-        raise SegmentRuleContractError("DUPLICATE_SECOND_SEQUENCE_ELEMENT_ID")
-    if any(item.sequence_id != context.pending.sequence_id for item in elements):
-        raise SegmentRuleContractError("SECOND_SEQUENCE_ID_MISMATCH")
-    if left.start_endpoint_id != context.pending.pending_endpoint_id:
-        raise SegmentRuleContractError("SECOND_SEQUENCE_ENDPOINT_NOT_ADJACENT")
-    if left.end_endpoint_id != center.start_endpoint_id:
-        raise SegmentRuleContractError("SECOND_SEQUENCE_LEFT_CENTER_DISCONNECTED")
-    if center.end_endpoint_id != right.start_endpoint_id:
-        raise SegmentRuleContractError("SECOND_SEQUENCE_CENTER_RIGHT_DISCONNECTED")
-    if any(not item.normalized for item in elements):
-        raise SegmentRuleContractError("SECOND_SEQUENCE_NORMALIZATION_REQUIRED")
-    intervals = tuple(item.interval for item in elements)
-    if any(not item.source_stroke_logical_ids for item in intervals):
-        raise SegmentRuleContractError("SECOND_SEQUENCE_PROVENANCE_REQUIRED")
-    combined_provenance = (
-        left.interval.source_stroke_logical_ids
-        + center.interval.source_stroke_logical_ids
-        + right.interval.source_stroke_logical_ids
+    intervals = _validate_standard_element_window(
+        left,
+        center,
+        right,
+        sequence_id=context.pending.sequence_id,
+        normalized_source_logical_ids=context.normalized_source_logical_ids,
+        reason_prefix="SECOND_SEQUENCE",
     )
-    if len(combined_provenance) != len(set(combined_provenance)):
-        raise SegmentRuleContractError("DUPLICATE_SECOND_SEQUENCE_PROVENANCE")
-    if combined_provenance != context.normalized_source_logical_ids:
-        raise SegmentRuleContractError("SECOND_SEQUENCE_PROVENANCE_MISMATCH")
-    if not set(context.pending.pending_endpoint_source_logical_ids).issubset(
-        left.interval.source_stroke_logical_ids
-    ):
-        raise SegmentRuleContractError("PENDING_ENDPOINT_PROVENANCE_NOT_BOUND")
+    if left.start_endpoint_id != context.pending.pending_endpoint.endpoint_id:
+        raise SegmentRuleContractError("SECOND_SEQUENCE_ENDPOINT_NOT_ADJACENT")
     fractal_type = classify_strict_feature_fractal(*intervals)
     required = (
         FeatureFractalType.BOTTOM
@@ -732,17 +737,11 @@ def classify_pending_second_case_invalidation(
         raise SegmentRuleContractError("SECOND_CASE_PENDING evidence required")
     if not isinstance(extreme_evidence, OriginalDirectionExtremeEvidence):
         raise SegmentRuleContractError("original-direction extreme evidence required")
-    if extreme_evidence.original_direction != context.original_direction:
-        raise SegmentRuleContractError("SECOND_CASE_DIRECTION_MISMATCH")
-    if extreme_evidence.pending_endpoint_id != context.pending_endpoint_id:
-        raise SegmentRuleContractError("EXTREME_PENDING_ENDPOINT_ID_MISMATCH")
     if (
-        extreme_evidence.pending_endpoint_source_logical_ids
-        != context.pending_endpoint_source_logical_ids
+        extreme_evidence.observed_at_bar_index
+        <= context.pending_endpoint.bar_index
     ):
-        raise SegmentRuleContractError(
-            "EXTREME_PENDING_ENDPOINT_PROVENANCE_MISMATCH"
-        )
+        raise SegmentRuleContractError("extreme evidence must follow pending endpoint")
     if (
         secondary_confirmed_at_bar is not None
         and (
@@ -756,7 +755,12 @@ def classify_pending_second_case_invalidation(
         and secondary_confirmed_at_bar <= extreme_evidence.observed_at_bar_index
     ):
         raise SegmentRuleContractError("SECOND_CASE_ALREADY_CONFIRMED")
-    if not extreme_evidence.is_strict_original_direction_extreme():
+    is_strict = (
+        extreme_evidence.observed_extreme_price > context.pending_endpoint.price
+        if context.original_direction == SegmentDirection.UP
+        else extreme_evidence.observed_extreme_price < context.pending_endpoint.price
+    )
+    if not is_strict:
         return OracleDecision(
             DestructionCase.SECOND_CASE_PENDING,
             "ORIGINAL_DIRECTION_EXTREME_NOT_STRICT",
@@ -766,6 +770,44 @@ def classify_pending_second_case_invalidation(
         "PENDING_DESTRUCTION_INVALIDATED",
         original_segment_continues=True,
     )
+
+
+def _validate_standard_element_window(
+    left: FeatureElementRuleInput,
+    center: FeatureElementRuleInput,
+    right: FeatureElementRuleInput,
+    *,
+    sequence_id: str,
+    normalized_source_logical_ids: tuple[str, ...],
+    reason_prefix: str,
+) -> tuple[PriceInterval, PriceInterval, PriceInterval]:
+    elements = (left, center, right)
+    if any(not isinstance(item, FeatureElementRuleInput) for item in elements):
+        raise SegmentRuleContractError("three feature elements required")
+    logical_ids = tuple(item.logical_id for item in elements)
+    if len(logical_ids) != len(set(logical_ids)):
+        raise SegmentRuleContractError(f"DUPLICATE_{reason_prefix}_ELEMENT_ID")
+    if any(item.sequence_id != sequence_id for item in elements):
+        raise SegmentRuleContractError(f"{reason_prefix}_ID_MISMATCH")
+    if any(not item.normalized for item in elements):
+        raise SegmentRuleContractError(f"{reason_prefix}_NORMALIZATION_REQUIRED")
+    if left.end_endpoint_id != center.start_endpoint_id:
+        raise SegmentRuleContractError(f"{reason_prefix}_LEFT_CENTER_DISCONNECTED")
+    if center.end_endpoint_id != right.start_endpoint_id:
+        raise SegmentRuleContractError(f"{reason_prefix}_CENTER_RIGHT_DISCONNECTED")
+    intervals = tuple(item.interval for item in elements)
+    if any(not item.source_stroke_logical_ids for item in intervals):
+        raise SegmentRuleContractError(f"{reason_prefix}_PROVENANCE_REQUIRED")
+    combined_provenance = tuple(
+        source
+        for item in intervals
+        for source in item.source_stroke_logical_ids
+    )
+    if len(combined_provenance) != len(set(combined_provenance)):
+        raise SegmentRuleContractError(f"DUPLICATE_{reason_prefix}_PROVENANCE")
+    if combined_provenance != normalized_source_logical_ids:
+        raise SegmentRuleContractError(f"{reason_prefix}_PROVENANCE_MISMATCH")
+    return intervals
 
 
 def choose_deterministic_candidate(

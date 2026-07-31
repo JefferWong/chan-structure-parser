@@ -149,7 +149,7 @@
     "classification": "ORIGINAL_CANONICAL_CORE",
     "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 11, "pending_endpoint_bar_index": -1, "observed_at_bar_index": 20, "secondary_confirmed_at_bar": null},
     "expected": {"accepted": false},
-    "reason_code": "extreme evidence bars must be nonnegative integers"
+    "reason_code": "pending endpoint bar must be a nonnegative integer"
   },
   {
     "fixture_id": "CASE2-SECOND-SEQUENCE-INCLUSION-001",
@@ -206,5 +206,69 @@
     "input": {"mutation": "duplicate_element_id"},
     "expected": {"accepted": false},
     "reason_code": "DUPLICATE_SECOND_SEQUENCE_ELEMENT_ID"
+  },
+  {
+    "fixture_id": "PRIMARY-SEQUENCE-ID-MISMATCH-REJECT-001",
+    "rule_ids": ["FS-002", "DS-CASE1"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "sequence_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_ID_MISMATCH"
+  },
+  {
+    "fixture_id": "PRIMARY-DUPLICATE-ELEMENT-ID-REJECT-001",
+    "rule_ids": ["FS-003", "DS-CASE1"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "duplicate_element_id"},
+    "expected": {"accepted": false},
+    "reason_code": "DUPLICATE_PRIMARY_ELEMENT_ID"
+  },
+  {
+    "fixture_id": "PRIMARY-NONNORMALIZED-ELEMENT-REJECT-001",
+    "rule_ids": ["FS-003", "DS-CASE1"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "nonnormalized_center"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_NORMALIZATION_REQUIRED"
+  },
+  {
+    "fixture_id": "PRIMARY-LEFT-CENTER-DISCONNECTED-REJECT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "disconnect_left_center"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_LEFT_CENTER_DISCONNECTED"
+  },
+  {
+    "fixture_id": "PRIMARY-CENTER-RIGHT-DISCONNECTED-REJECT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "disconnect_center_right"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_CENTER_RIGHT_DISCONNECTED"
+  },
+  {
+    "fixture_id": "PRIMARY-EMPTY-PROVENANCE-REJECT-001",
+    "rule_ids": ["FS-003"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "empty_provenance"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_PROVENANCE_REQUIRED"
+  },
+  {
+    "fixture_id": "PRIMARY-DUPLICATE-PROVENANCE-REJECT-001",
+    "rule_ids": ["FS-003"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "duplicate_provenance"},
+    "expected": {"accepted": false},
+    "reason_code": "DUPLICATE_PRIMARY_PROVENANCE"
+  },
+  {
+    "fixture_id": "PRIMARY-PROVENANCE-MISMATCH-REJECT-001",
+    "rule_ids": ["FS-003"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "provenance_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_PROVENANCE_MISMATCH"
   }
 ]
