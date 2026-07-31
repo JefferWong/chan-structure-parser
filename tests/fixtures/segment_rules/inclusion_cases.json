@@ -1,0 +1,58 @@
+[
+  {
+    "fixture_id": "INCLUSION-UP-001",
+    "rule_ids": ["EQ-INCLUSION-001", "EQ-SEED-001", "EQ-MERGE-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"a": [1, 5], "b": [2, 4], "seed": "UP"},
+    "expected": {"merged": [2, 5]},
+    "reason_code": "MERGE_UP"
+  },
+  {
+    "fixture_id": "INCLUSION-DOWN-001",
+    "rule_ids": ["EQ-INCLUSION-001", "EQ-SEED-001", "EQ-MERGE-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"a": [1, 5], "b": [2, 4], "seed": "DOWN"},
+    "expected": {"merged": [1, 4]},
+    "reason_code": "MERGE_DOWN"
+  },
+  {
+    "fixture_id": "INCLUSION-EQUAL-001",
+    "rule_ids": ["EQ-INCLUSION-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"a": [1, 5], "b": [1, 5]},
+    "expected": {"relation": "EQUAL", "included": true},
+    "reason_code": "EQUALITY_COUNTS_AS_INCLUSION"
+  },
+  {
+    "fixture_id": "INCLUSION-UNSEEDED-001",
+    "rule_ids": ["EQ-SEED-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"previous": [1, 5], "current": [2, 5]},
+    "expected": {"seed": "UNSEEDED", "defer": true},
+    "reason_code": "DIRECTION_UNSEEDED"
+  },
+  {
+    "fixture_id": "INCLUSION-PROVENANCE-001",
+    "rule_ids": ["FS-003"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"a_sources": ["stroke:a"], "b_sources": ["stroke:b"], "seed": "UP"},
+    "expected": {"sources": ["stroke:a", "stroke:b"]},
+    "reason_code": "PROVENANCE_PRESERVED"
+  },
+  {
+    "fixture_id": "INCLUSION-FIRST-BOUNDARY-NOMERGE-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"crosses_first_case_boundary": true, "included": true},
+    "expected": {"merged": false},
+    "reason_code": "HYPOTHETICAL_BOUNDARY_DIFFERENT_NATURE"
+  },
+  {
+    "fixture_id": "INCLUSION-SECOND-SEQUENCE-MERGE-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"second_feature_sequence": true, "included": true, "seed": "UP"},
+    "expected": {"merged": true},
+    "reason_code": "SECOND_SEQUENCE_NORMAL_INCLUSION"
+  }
+]

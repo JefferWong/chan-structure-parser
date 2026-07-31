@@ -1,0 +1,58 @@
+[
+  {
+    "fixture_id": "WINNER-LEFTMOST-001",
+    "rule_ids": ["EQ-WINNER-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"candidates": [["later", 20, 1], ["leftmost", 10, 5]]},
+    "expected": {"winner": "leftmost"},
+    "reason_code": "LEFTMOST_ENDPOINT_WINS"
+  },
+  {
+    "fixture_id": "WINNER-SAME-ENDPOINT-001",
+    "rule_ids": ["EQ-WINNER-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"candidates": [["later-start", 10, 5], ["earlier-start", 10, 1]]},
+    "expected": {"winner": "earlier-start"},
+    "reason_code": "EARLIEST_START_WINS_TIE"
+  },
+  {
+    "fixture_id": "LIFECYCLE-INVALIDATED-001",
+    "rule_ids": ["EQ-LIFECYCLE-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"previously_confirmed": false, "evidence_invalidated": true},
+    "expected": {"status": "INVALIDATED"},
+    "reason_code": "UNCONFIRMED_CANDIDATE_INVALIDATED"
+  },
+  {
+    "fixture_id": "LIFECYCLE-REPLACED-001",
+    "rule_ids": ["EQ-LIFECYCLE-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"previously_confirmed": true, "reverse_segment_logical_id": "segment:reverse"},
+    "expected": {"status": "REPLACED", "replaced_by": "segment:reverse"},
+    "reason_code": "CONFIRMED_SEGMENT_REPLACED"
+  },
+  {
+    "fixture_id": "TIMING-NO-BACKFILL-001",
+    "rule_ids": ["EQ-TIME-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"endpoint_bar": 10, "right_element_visible_bars": [12, 14]},
+    "expected": {"confirmed_at_bar": 14},
+    "reason_code": "LATEST_VISIBLE_EVIDENCE_BAR"
+  },
+  {
+    "fixture_id": "SG-CONNECTION-001",
+    "rule_ids": ["SG-001"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"previous_direction": "UP", "current_direction": "DOWN", "shared_endpoint": "endpoint:1"},
+    "expected": {"eligible": true},
+    "reason_code": "SEGMENT_BOUNDARY_ELIGIBLE"
+  },
+  {
+    "fixture_id": "FREEZE-APPEND-001",
+    "rule_ids": ["EQ-FREEZE-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"prefix_hash": "abc", "before_event_count": 10, "after_event_count": 11, "confirmed_at_bar": 20, "correction_occurred": true},
+    "expected": {"frozen": true},
+    "reason_code": "FROZEN_PREFIX_APPEND_ONLY"
+  }
+]
