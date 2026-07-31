@@ -1,14 +1,14 @@
 # Phase 2 canonical segment decisions.
 # Contract and reference-oracle use only; this profile cannot enable a parser.
 profile_id: minimal_segment_canonical_rules_v1
-profile_version: 1.0.0
+profile_version: "1.0.0"
 status: CANONICAL_RULES_ONLY
 
 phase1_profile_id: minimal_strict_v1
 phase1_baseline_commit: de1b7f589ebe3c2a41fa6501d793200a7b595426
 
 segment_contract_profile_id: minimal_segment_contract_v1
-segment_contract_profile_version: 0.2.0
+segment_contract_profile_version: "0.2.0"
 segment_contract_baseline_commit: f7eecdd657530f928ffbf869832e76f1dd17b92e
 
 implementation_enabled: false

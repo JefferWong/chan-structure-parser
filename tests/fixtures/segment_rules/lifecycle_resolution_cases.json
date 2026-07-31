@@ -19,7 +19,15 @@
     "fixture_id": "LIFECYCLE-INVALIDATED-001",
     "rule_ids": ["EQ-LIFECYCLE-001"],
     "classification": "ENGINEERING_DETERMINISM_V1",
-    "input": {"previously_confirmed": false, "evidence_invalidated": true},
+    "input": {
+      "minimum_candidate_window_present": true,
+      "provisional_evidence_present": false,
+      "previously_confirmed": false,
+      "evidence_complete": false,
+      "evidence_invalidated": true,
+      "reverse_segment_logical_id": null,
+      "reverse_segment_confirmed": false
+    },
     "expected": {"status": "INVALIDATED"},
     "reason_code": "UNCONFIRMED_CANDIDATE_INVALIDATED"
   },
@@ -27,7 +35,15 @@
     "fixture_id": "LIFECYCLE-REPLACED-001",
     "rule_ids": ["EQ-LIFECYCLE-001"],
     "classification": "ENGINEERING_DETERMINISM_V1",
-    "input": {"previously_confirmed": true, "reverse_segment_logical_id": "segment:reverse"},
+    "input": {
+      "minimum_candidate_window_present": true,
+      "provisional_evidence_present": false,
+      "previously_confirmed": true,
+      "evidence_complete": true,
+      "evidence_invalidated": false,
+      "reverse_segment_logical_id": "segment:reverse",
+      "reverse_segment_confirmed": true
+    },
     "expected": {"status": "REPLACED", "replaced_by": "segment:reverse"},
     "reason_code": "CONFIRMED_SEGMENT_REPLACED"
   },

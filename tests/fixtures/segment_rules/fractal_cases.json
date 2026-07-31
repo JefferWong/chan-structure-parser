@@ -35,7 +35,13 @@
     "fixture_id": "FRACTAL-WRONG-DIRECTION-REJECT-001",
     "rule_ids": ["FR-001"],
     "classification": "ORIGINAL_CANONICAL_CORE",
-    "input": {"fractal": "BOTTOM", "candidate_direction": "UP"},
+    "input": {
+      "left": [3, 7],
+      "center": [1, 4],
+      "right": [2, 6],
+      "fractal": "BOTTOM",
+      "candidate_direction": "UP"
+    },
     "expected": {"destruction_confirmed": false},
     "reason_code": "FEATURE_FRACTAL_REQUIRED"
   }

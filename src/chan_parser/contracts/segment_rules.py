@@ -763,6 +763,10 @@ def build_feature_sequence(
     """Apply FS-001/FS-002 without constructing a segment."""
     if not isinstance(candidate_direction, SegmentDirection):
         raise SegmentRuleContractError("valid candidate direction required")
+    if not isinstance(strokes, Sequence) or any(
+        not isinstance(stroke, StrokeRuleInput) for stroke in strokes
+    ):
+        raise SegmentRuleContractError("strokes must contain StrokeRuleInput values")
     if not sequence_id or any(stroke.sequence_id != sequence_id for stroke in strokes):
         raise SegmentRuleContractError("FS_CROSS_SEQUENCE_REJECTED")
     logical_ids = tuple(stroke.logical_id for stroke in strokes)
@@ -839,6 +843,8 @@ def merge_included_intervals(
     *,
     context: InclusionContext,
 ) -> PriceInterval:
+    if not isinstance(first, PriceInterval) or not isinstance(second, PriceInterval):
+        raise SegmentRuleContractError("PriceInterval values required")
     if not isinstance(seed, InclusionSeed):
         raise SegmentRuleContractError("valid inclusion seed required")
     if (
@@ -1266,8 +1272,12 @@ def _validate_standard_element_window(
 def choose_deterministic_candidate(
     candidates: Sequence[CandidateChoice],
 ) -> CandidateResolution:
-    if not candidates:
+    if not isinstance(candidates, Sequence) or not candidates:
         raise SegmentRuleContractError("at least one confirmable candidate required")
+    if any(not isinstance(item, CandidateChoice) for item in candidates):
+        raise SegmentRuleContractError(
+            "candidates must contain CandidateChoice values"
+        )
     logical_ids = tuple(item.logical_id for item in candidates)
     if len(logical_ids) != len(set(logical_ids)):
         raise SegmentRuleContractError("duplicate candidate logical_id")
@@ -1426,6 +1436,14 @@ def validate_segment_boundaries(
     previous_confirmed: SegmentBoundaryInput | None = None,
     destroyer_direction: SegmentDirection | None = None,
 ) -> bool:
+    if not isinstance(current, SegmentBoundaryInput):
+        raise SegmentRuleContractError("current SegmentBoundaryInput required")
+    if previous_confirmed is not None and not isinstance(
+        previous_confirmed, SegmentBoundaryInput
+    ):
+        raise SegmentRuleContractError(
+            "previous_confirmed SegmentBoundaryInput required"
+        )
     for item in (current, previous_confirmed):
         if item is None:
             continue
@@ -1463,7 +1481,12 @@ def validate_frozen_prefix_transition(
     revised_confirmed_at_bar: int,
     correction_occurred: bool,
 ) -> bool:
-    if not before_prefix_hash or not after_prefix_hash:
+    if (
+        type(before_prefix_hash) is not str
+        or not before_prefix_hash
+        or type(after_prefix_hash) is not str
+        or not after_prefix_hash
+    ):
         raise SegmentRuleContractError("frozen-prefix hashes required")
     integers = (
         before_event_count,

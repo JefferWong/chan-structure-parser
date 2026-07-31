@@ -589,22 +589,29 @@ def test_every_fixture_executes_against_reference_oracle(case):
             *(data.get("b") or [2, 4]),
             *(data.get("b_sources") or ["stroke:b"]),
         )
-        if fixture_id == "INCLUSION-FIRST-BOUNDARY-NOMERGE-001":
+        relation = classify_interval_relation(first, second)
+        included = relation in {
+            IntervalRelation.CONTAINS,
+            IntervalRelation.CONTAINED_BY,
+            IntervalRelation.EQUAL,
+        }
+        if "included" in data:
+            assert included is data["included"]
+        boundary = SequenceBoundaryNature.NORMAL
+        if data.get("crosses_first_case_boundary", False):
+            boundary = SequenceBoundaryNature.FIRST_CASE_CROSS_BOUNDARY
+        elif data.get("second_feature_sequence", False):
+            boundary = SequenceBoundaryNature.SECOND_FEATURE_SEQUENCE
+        if expected.get("merged") is False:
             with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
                 merge_included_intervals(
                     first,
                     second,
-                    InclusionSeed.UP,
-                    context=inclusion_context(
-                        SequenceBoundaryNature.FIRST_CASE_CROSS_BOUNDARY
-                    ),
+                    InclusionSeed(data.get("seed", "UP")),
+                    context=inclusion_context(boundary),
                 )
+            assert expected["merged"] is False
             return
-        boundary = (
-            SequenceBoundaryNature.SECOND_FEATURE_SEQUENCE
-            if fixture_id == "INCLUSION-SECOND-SEQUENCE-MERGE-001"
-            else SequenceBoundaryNature.NORMAL
-        )
         merged = merge_included_intervals(
             first,
             second,
@@ -613,18 +620,28 @@ def test_every_fixture_executes_against_reference_oracle(case):
         )
         if "merged" in expected and isinstance(expected["merged"], list):
             assert [merged.low, merged.high] == expected["merged"]
+        elif "merged" in expected:
+            assert expected["merged"] is True
         if "sources" in expected:
             assert list(merged.source_stroke_logical_ids) == expected["sources"]
         return
     if fixture_id.startswith("FRACTAL-"):
         if fixture_id == "FRACTAL-WRONG-DIRECTION-REJECT-001":
-            result = classify_primary(
-                SegmentDirection.UP,
-                (3, 7),
-                (1, 4),
-                (2, 6),
+            fractal = classify_strict_feature_fractal(
+                interval(*data["left"]),
+                interval(*data["center"]),
+                interval(*data["right"]),
             )
-            assert result.destruction_case == DestructionCase.NONE
+            assert fractal.value == data["fractal"]
+            result = classify_primary(
+                SegmentDirection(data["candidate_direction"]),
+                tuple(data["left"]),
+                tuple(data["center"]),
+                tuple(data["right"]),
+            )
+            assert (
+                result.destruction_case != DestructionCase.NONE
+            ) is expected["destruction_confirmed"]
             assert result.reason_code == case["reason_code"]
             return
         result = classify_strict_feature_fractal(
@@ -1086,47 +1103,24 @@ def test_every_fixture_executes_against_reference_oracle(case):
             candidates
         ).winner_logical_id == expected["winner"]
         return
-    if fixture_id == "LIFECYCLE-INVALIDATED-001":
-        status, _ = resolve_lifecycle(
-            minimum_candidate_window_present=True,
-            provisional_evidence_present=False,
-            previously_confirmed=False,
-            evidence_complete=False,
-            evidence_invalidated=True,
-        )
-        assert status.value == expected["status"]
-        return
-    if fixture_id == "LIFECYCLE-REPLACED-001":
-        status, replaced_by = resolve_lifecycle(
-            minimum_candidate_window_present=True,
-            provisional_evidence_present=False,
-            previously_confirmed=True,
-            evidence_complete=True,
-            evidence_invalidated=False,
-            reverse_segment_logical_id=data["reverse_segment_logical_id"],
-            reverse_segment_confirmed=True,
-        )
-        assert status.value == expected["status"]
-        assert replaced_by == expected["replaced_by"]
-        return
-    if fixture_id.startswith("LIFECYCLE-") and fixture_id in {
-        "LIFECYCLE-NO-CANDIDATE-REJECT-001",
-        "LIFECYCLE-CANDIDATE-001",
-        "LIFECYCLE-PROVISIONAL-001",
-        "LIFECYCLE-EVIDENCE-WITHOUT-CANDIDATE-REJECT-001",
-        "LIFECYCLE-CONTRADICTORY-EVIDENCE-REJECT-001",
-    }:
+    if fixture_id.startswith("LIFECYCLE-"):
         kwargs = {
-            **data,
+            "minimum_candidate_window_present": True,
+            "provisional_evidence_present": False,
             "previously_confirmed": False,
+            "evidence_complete": False,
+            "evidence_invalidated": False,
+            "reverse_segment_logical_id": None,
             "reverse_segment_confirmed": False,
+            **data,
         }
         if expected.get("accepted") is False:
             with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
                 resolve_lifecycle(**kwargs)
             return
-        status, _ = resolve_lifecycle(**kwargs)
+        status, replaced_by = resolve_lifecycle(**kwargs)
         assert status.value == expected["status"]
+        assert replaced_by == expected.get("replaced_by")
         return
     if fixture_id == "TIMING-NO-BACKFILL-001":
         assert confirmation_bar(
@@ -1280,6 +1274,26 @@ def test_feature_sequence_rejects_cross_sequence_and_duplicate_logical_id():
     duplicate = StrokeRuleInput("stroke:1", "c", SegmentDirection.DOWN, 2, 3, 2, 3, "s1")
     with pytest.raises(SegmentRuleContractError, match="DUPLICATE"):
         build_feature_sequence(SegmentDirection.UP, [one, duplicate], sequence_id="s1")
+
+
+def test_feature_sequence_malformed_stroke_fails_closed_before_attribute_access():
+    for malformed in ([object()], object()):
+        with pytest.raises(SegmentRuleContractError) as exc:
+            build_feature_sequence(
+                SegmentDirection.UP, malformed, sequence_id="fixture-sequence"
+            )
+        assert not isinstance(exc.value, (AttributeError, TypeError))
+
+
+def test_merge_malformed_interval_fails_closed_before_relation_classification():
+    with pytest.raises(SegmentRuleContractError) as exc:
+        merge_included_intervals(
+            object(),
+            interval(2, 4, "stroke:b"),
+            InclusionSeed.UP,
+            context=inclusion_context(),
+        )
+    assert not isinstance(exc.value, AttributeError)
 
 
 @pytest.mark.parametrize(
@@ -1522,6 +1536,23 @@ def test_frozen_prefix_transition_is_append_only_and_no_backfill():
         )
 
 
+@pytest.mark.parametrize("invalid_hash", [1, True, None, ""])
+@pytest.mark.parametrize("field", ["before_prefix_hash", "after_prefix_hash"])
+def test_frozen_prefix_hashes_require_nonempty_exact_strings(field, invalid_hash):
+    kwargs = {
+        "before_prefix_hash": "abc",
+        "after_prefix_hash": "abc",
+        "before_event_count": 10,
+        "after_event_count": 11,
+        "original_confirmed_at_bar": 20,
+        "revised_confirmed_at_bar": 20,
+        "correction_occurred": True,
+    }
+    kwargs[field] = invalid_hash
+    with pytest.raises(SegmentRuleContractError, match="hashes required"):
+        validate_frozen_prefix_transition(**kwargs)
+
+
 def test_confirmation_time_uses_latest_visible_bar_and_never_backfills():
     assert confirmation_bar(10, [12, 14, 13]) == 14
     with pytest.raises(SegmentRuleContractError, match="BACKFILL"):
@@ -1578,6 +1609,30 @@ def test_lifecycle_rejects_contradictory_confirmation_and_replacement_evidence()
             evidence_invalidated=False,
             reverse_segment_confirmed=True,
         )
+
+
+def test_candidate_choice_malformed_input_fails_closed_before_attribute_access():
+    for malformed in ([object()], object()):
+        with pytest.raises(SegmentRuleContractError) as exc:
+            choose_deterministic_candidate(malformed)
+        assert not isinstance(exc.value, (AttributeError, TypeError))
+
+
+def test_segment_boundary_malformed_inputs_fail_closed_before_attribute_access():
+    valid = SegmentBoundaryInput(
+        "segment:up",
+        SegmentDirection.UP,
+        SegmentDirection.UP,
+        SegmentDirection.UP,
+        "endpoint:0",
+        "endpoint:1",
+    )
+    with pytest.raises(SegmentRuleContractError) as current_exc:
+        validate_segment_boundaries(object())
+    assert not isinstance(current_exc.value, AttributeError)
+    with pytest.raises(SegmentRuleContractError) as previous_exc:
+        validate_segment_boundaries(valid, previous_confirmed=object())
+    assert not isinstance(previous_exc.value, AttributeError)
 
 
 def test_frozen_prefix_correction_requires_appended_event():
