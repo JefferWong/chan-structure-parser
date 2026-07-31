@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
+import json
 import math
 from typing import Any, Mapping, Sequence
 
@@ -205,7 +207,7 @@ class InclusionContext:
 
 
 @dataclass(frozen=True)
-class PendingEndpointEvidence:
+class FeatureEndpointEvidence:
     endpoint_id: str
     defining_stroke_logical_ids: tuple[str, ...]
     price: float
@@ -222,67 +224,16 @@ class PendingEndpointEvidence:
                 for value in self.defining_stroke_logical_ids
             )
         ):
-            raise SegmentRuleContractError("pending endpoint identity required")
+            raise SegmentRuleContractError("feature endpoint identity required")
         if len(self.defining_stroke_logical_ids) != len(
             set(self.defining_stroke_logical_ids)
         ):
-            raise SegmentRuleContractError("duplicate pending endpoint provenance")
+            raise SegmentRuleContractError("duplicate feature endpoint provenance")
         if not _is_finite_number(self.price):
-            raise SegmentRuleContractError("pending endpoint price must be finite")
+            raise SegmentRuleContractError("feature endpoint price must be finite")
         if type(self.bar_index) is not int or self.bar_index < 0:
             raise SegmentRuleContractError(
-                "pending endpoint bar must be a nonnegative integer"
-            )
-
-
-@dataclass(frozen=True)
-class PendingSecondCaseContext:
-    primary_case: DestructionCase
-    original_direction: SegmentDirection
-    sequence_id: str
-    pending_endpoint: PendingEndpointEvidence
-
-    def __post_init__(self) -> None:
-        if (
-            not isinstance(self.primary_case, DestructionCase)
-            or not isinstance(self.original_direction, SegmentDirection)
-            or type(self.sequence_id) is not str
-            or not self.sequence_id
-            or not isinstance(self.pending_endpoint, PendingEndpointEvidence)
-        ):
-            raise SegmentRuleContractError(
-                "valid primary case, sequence ID, and pending endpoint required"
-            )
-
-
-@dataclass(frozen=True)
-class OriginalDirectionExtremeEvidence:
-    observed_extreme_price: float
-    observed_at_bar_index: int
-    observed_source_stroke_logical_ids: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.observed_source_stroke_logical_ids) is not tuple
-            or not self.observed_source_stroke_logical_ids
-            or any(
-                type(value) is not str or not value
-                for value in self.observed_source_stroke_logical_ids
-            )
-            or len(self.observed_source_stroke_logical_ids)
-            != len(set(self.observed_source_stroke_logical_ids))
-        ):
-            raise SegmentRuleContractError(
-                "observed extreme provenance must be unique"
-            )
-        if not _is_finite_number(self.observed_extreme_price):
-            raise SegmentRuleContractError("extreme evidence prices must be finite")
-        if (
-            type(self.observed_at_bar_index) is not int
-            or self.observed_at_bar_index < 0
-        ):
-            raise SegmentRuleContractError(
-                "extreme evidence bars must be nonnegative integers"
+                "feature endpoint bar must be a nonnegative integer"
             )
 
 
@@ -290,26 +241,86 @@ class OriginalDirectionExtremeEvidence:
 class FeatureElementRuleInput:
     logical_id: str
     sequence_id: str
-    start_endpoint_id: str
-    end_endpoint_id: str
+    direction: SegmentDirection
+    start_endpoint: FeatureEndpointEvidence
+    end_endpoint: FeatureEndpointEvidence
+    high_endpoint: FeatureEndpointEvidence
+    low_endpoint: FeatureEndpointEvidence
     interval: PriceInterval
     normalized: bool
+    visible_at_bar_index: int
 
     def __post_init__(self) -> None:
-        identifiers = (
-            self.logical_id,
-            self.sequence_id,
-            self.start_endpoint_id,
-            self.end_endpoint_id,
-        )
+        identifiers = (self.logical_id, self.sequence_id)
         if any(type(value) is not str or not value for value in identifiers):
             raise SegmentRuleContractError("feature element stable IDs required")
-        if self.start_endpoint_id == self.end_endpoint_id:
+        if not isinstance(self.direction, SegmentDirection):
+            raise SegmentRuleContractError("feature element direction required")
+        endpoints = (
+            self.start_endpoint,
+            self.end_endpoint,
+            self.high_endpoint,
+            self.low_endpoint,
+        )
+        if any(not isinstance(item, FeatureEndpointEvidence) for item in endpoints):
+            raise SegmentRuleContractError("feature endpoint evidence required")
+        endpoint_registry: dict[str, FeatureEndpointEvidence] = {}
+        for item in endpoints:
+            existing = endpoint_registry.get(item.endpoint_id)
+            if existing is not None and existing != item:
+                raise SegmentRuleContractError(
+                    "feature endpoint identity evidence mismatch"
+                )
+            endpoint_registry[item.endpoint_id] = item
+        if self.start_endpoint.endpoint_id == self.end_endpoint.endpoint_id:
             raise SegmentRuleContractError("feature element endpoints must differ")
+        if self.start_endpoint.bar_index >= self.end_endpoint.bar_index:
+            raise SegmentRuleContractError("feature element bar order invalid")
         if not isinstance(self.interval, PriceInterval):
             raise SegmentRuleContractError("feature element interval required")
+        if not self.interval.source_stroke_logical_ids:
+            raise SegmentRuleContractError("feature element provenance required")
+        if self.high_endpoint.price != self.interval.high:
+            raise SegmentRuleContractError("feature high endpoint price mismatch")
+        if self.low_endpoint.price != self.interval.low:
+            raise SegmentRuleContractError("feature low endpoint price mismatch")
+        if not (
+            self.start_endpoint.bar_index
+            <= self.high_endpoint.bar_index
+            <= self.end_endpoint.bar_index
+        ):
+            raise SegmentRuleContractError("feature high endpoint bar mismatch")
+        if not (
+            self.start_endpoint.bar_index
+            <= self.low_endpoint.bar_index
+            <= self.end_endpoint.bar_index
+        ):
+            raise SegmentRuleContractError("feature low endpoint bar mismatch")
+        provenance = set(self.interval.source_stroke_logical_ids)
+        if not set(self.high_endpoint.defining_stroke_logical_ids).issubset(provenance):
+            raise SegmentRuleContractError("feature high endpoint provenance mismatch")
+        if not set(self.low_endpoint.defining_stroke_logical_ids).issubset(provenance):
+            raise SegmentRuleContractError("feature low endpoint provenance mismatch")
+        if (
+            self.direction == SegmentDirection.UP
+            and self.start_endpoint.price >= self.end_endpoint.price
+        ) or (
+            self.direction == SegmentDirection.DOWN
+            and self.start_endpoint.price <= self.end_endpoint.price
+        ):
+            raise SegmentRuleContractError("feature endpoint direction mismatch")
         if type(self.normalized) is not bool:
             raise SegmentRuleContractError("feature normalized flag must be bool")
+        if (
+            type(self.visible_at_bar_index) is not int
+            or self.visible_at_bar_index
+            < max(
+                self.end_endpoint.bar_index,
+                self.high_endpoint.bar_index,
+                self.low_endpoint.bar_index,
+            )
+        ):
+            raise SegmentRuleContractError("feature visibility bar invalid")
 
 
 @dataclass(frozen=True)
@@ -328,6 +339,187 @@ class PrimarySequenceContext:
                 "valid primary direction and sequence ID required"
             )
         _validate_normalized_provenance(self.normalized_source_logical_ids)
+
+
+@dataclass(frozen=True)
+class PrimaryDestructionEvidence:
+    evidence_key: str
+    destruction_case: DestructionCase
+    reason_code: str
+    candidate_direction: SegmentDirection
+    primary_sequence_id: str
+    primary_element_logical_ids: tuple[str, str, str]
+    feature_fractal_type: FeatureFractalType
+    endpoint: FeatureEndpointEvidence | None
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.evidence_key) is not str
+            or not self.evidence_key
+            or not isinstance(self.destruction_case, DestructionCase)
+            or type(self.reason_code) is not str
+            or not self.reason_code
+            or not isinstance(self.candidate_direction, SegmentDirection)
+            or type(self.primary_sequence_id) is not str
+            or not self.primary_sequence_id
+            or type(self.primary_element_logical_ids) is not tuple
+            or len(self.primary_element_logical_ids) != 3
+            or any(
+                type(value) is not str or not value
+                for value in self.primary_element_logical_ids
+            )
+            or len(set(self.primary_element_logical_ids)) != 3
+            or not isinstance(self.feature_fractal_type, FeatureFractalType)
+        ):
+            raise SegmentRuleContractError("malformed primary destruction evidence")
+        if self.destruction_case in {
+            DestructionCase.FIRST_CASE,
+            DestructionCase.SECOND_CASE_PENDING,
+        }:
+            if not isinstance(self.endpoint, FeatureEndpointEvidence):
+                raise SegmentRuleContractError("primary endpoint evidence required")
+        elif self.endpoint is not None:
+            raise SegmentRuleContractError("primary NONE evidence forbids endpoint")
+        if self.evidence_key != _primary_evidence_key(
+            self.destruction_case,
+            self.candidate_direction,
+            self.primary_sequence_id,
+            self.primary_element_logical_ids,
+            self.feature_fractal_type,
+            self.endpoint,
+        ):
+            raise SegmentRuleContractError("primary evidence key mismatch")
+
+
+@dataclass(frozen=True)
+class PendingSecondCaseContext:
+    primary_evidence: PrimaryDestructionEvidence
+    secondary_sequence_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.primary_evidence, PrimaryDestructionEvidence):
+            raise SegmentRuleContractError("primary destruction evidence required")
+        if (
+            self.primary_evidence.destruction_case
+            != DestructionCase.SECOND_CASE_PENDING
+            or self.primary_evidence.endpoint is None
+        ):
+            raise SegmentRuleContractError(
+                "SECOND_CASE_PENDING primary evidence required"
+            )
+        if (
+            type(self.secondary_sequence_id) is not str
+            or not self.secondary_sequence_id
+        ):
+            raise SegmentRuleContractError("secondary sequence ID required")
+
+    @property
+    def original_direction(self) -> SegmentDirection:
+        return self.primary_evidence.candidate_direction
+
+    @property
+    def pending_endpoint(self) -> FeatureEndpointEvidence:
+        endpoint = self.primary_evidence.endpoint
+        if endpoint is None:
+            raise SegmentRuleContractError("primary endpoint evidence required")
+        return endpoint
+
+
+@dataclass(frozen=True)
+class OriginalDirectionExtremeEvidence:
+    primary_evidence_key: str
+    pending_endpoint_id: str
+    observed_extreme_price: float
+    observed_at_bar_index: int
+    observed_source_stroke_logical_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.primary_evidence_key) is not str
+            or not self.primary_evidence_key
+            or type(self.pending_endpoint_id) is not str
+            or not self.pending_endpoint_id
+        ):
+            raise SegmentRuleContractError("extreme evidence binding required")
+        _validate_evidence_provenance(
+            self.observed_source_stroke_logical_ids,
+            "observed extreme",
+        )
+        if not _is_finite_number(self.observed_extreme_price):
+            raise SegmentRuleContractError("extreme evidence prices must be finite")
+        if (
+            type(self.observed_at_bar_index) is not int
+            or self.observed_at_bar_index < 0
+        ):
+            raise SegmentRuleContractError(
+                "extreme evidence bars must be nonnegative integers"
+            )
+
+
+@dataclass(frozen=True)
+class SecondaryConfirmationEvidence:
+    evidence_key: str
+    primary_evidence_key: str
+    pending_endpoint_id: str
+    secondary_sequence_id: str
+    feature_element_logical_ids: tuple[str, str, str]
+    feature_elements: tuple[
+        FeatureElementRuleInput,
+        FeatureElementRuleInput,
+        FeatureElementRuleInput,
+    ]
+    feature_fractal_type: FeatureFractalType
+    confirmed_at_bar: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.evidence_key) is not str
+            or not self.evidence_key
+            or type(self.primary_evidence_key) is not str
+            or not self.primary_evidence_key
+            or type(self.pending_endpoint_id) is not str
+            or not self.pending_endpoint_id
+            or type(self.secondary_sequence_id) is not str
+            or not self.secondary_sequence_id
+            or type(self.feature_element_logical_ids) is not tuple
+            or len(self.feature_element_logical_ids) != 3
+            or any(
+                type(value) is not str or not value
+                for value in self.feature_element_logical_ids
+            )
+            or len(set(self.feature_element_logical_ids)) != 3
+            or type(self.feature_elements) is not tuple
+            or len(self.feature_elements) != 3
+            or any(
+                not isinstance(value, FeatureElementRuleInput)
+                for value in self.feature_elements
+            )
+            or not isinstance(self.feature_fractal_type, FeatureFractalType)
+            or type(self.confirmed_at_bar) is not int
+            or self.confirmed_at_bar < 0
+        ):
+            raise SegmentRuleContractError(
+                "malformed secondary confirmation evidence"
+            )
+        if tuple(
+            item.logical_id for item in self.feature_elements
+        ) != self.feature_element_logical_ids:
+            raise SegmentRuleContractError(
+                "secondary confirmation element identity mismatch"
+            )
+        if self.confirmed_at_bar != self.feature_elements[2].visible_at_bar_index:
+            raise SegmentRuleContractError(
+                "secondary confirmation time not derived from right element"
+            )
+        if self.evidence_key != _secondary_evidence_key(
+            self.primary_evidence_key,
+            self.pending_endpoint_id,
+            self.secondary_sequence_id,
+            self.feature_element_logical_ids,
+            self.feature_fractal_type,
+            self.confirmed_at_bar,
+        ):
+            raise SegmentRuleContractError("secondary evidence key mismatch")
 
 
 @dataclass(frozen=True)
@@ -448,6 +640,83 @@ def _is_finite_number(value: object) -> bool:
     if type(value) is float:
         return math.isfinite(value)
     return False
+
+
+def _validate_evidence_provenance(value: object, label: str) -> None:
+    if (
+        type(value) is not tuple
+        or not value
+        or any(type(item) is not str or not item for item in value)
+        or len(value) != len(set(value))
+    ):
+        raise SegmentRuleContractError(f"{label} provenance must be unique")
+
+
+def _endpoint_payload(
+    endpoint: FeatureEndpointEvidence | None,
+) -> dict[str, object] | None:
+    if endpoint is None:
+        return None
+    return {
+        "endpoint_id": endpoint.endpoint_id,
+        "price": endpoint.price,
+        "bar_index": endpoint.bar_index,
+        "defining_stroke_logical_ids": endpoint.defining_stroke_logical_ids,
+    }
+
+
+def _stable_evidence_key(kind: str, payload: Mapping[str, object]) -> str:
+    canonical = json.dumps(
+        {"kind": kind, **payload},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _primary_evidence_key(
+    destruction_case: DestructionCase,
+    candidate_direction: SegmentDirection,
+    sequence_id: str,
+    element_ids: tuple[str, str, str],
+    fractal_type: FeatureFractalType,
+    endpoint: FeatureEndpointEvidence | None,
+) -> str:
+    return _stable_evidence_key(
+        "PRIMARY_DESTRUCTION_V1",
+        {
+            "case": destruction_case.value,
+            "candidate_direction": candidate_direction.value,
+            "sequence_id": sequence_id,
+            "element_ids": element_ids,
+            "fractal_type": fractal_type.value,
+            "endpoint": _endpoint_payload(endpoint),
+            "rule_version": "minimal_segment_canonical_rules_v1",
+        },
+    )
+
+
+def _secondary_evidence_key(
+    primary_evidence_key: str,
+    pending_endpoint_id: str,
+    sequence_id: str,
+    element_ids: tuple[str, str, str],
+    fractal_type: FeatureFractalType,
+    confirmed_at_bar: int,
+) -> str:
+    return _stable_evidence_key(
+        "SECONDARY_CONFIRMATION_V1",
+        {
+            "primary_evidence_key": primary_evidence_key,
+            "pending_endpoint_id": pending_endpoint_id,
+            "sequence_id": sequence_id,
+            "element_ids": element_ids,
+            "fractal_type": fractal_type.value,
+            "confirmed_at_bar": confirmed_at_bar,
+            "rule_version": "minimal_segment_canonical_rules_v1",
+        },
+    )
 
 
 def _validate_normalized_provenance(value: object) -> None:
@@ -634,7 +903,7 @@ def classify_primary_destruction_case(
     right: FeatureElementRuleInput,
     *,
     context: PrimarySequenceContext,
-) -> OracleDecision:
+) -> PrimaryDestructionEvidence:
     if not isinstance(context, PrimarySequenceContext):
         raise SegmentRuleContractError("primary sequence context required")
     intervals = _validate_standard_element_window(
@@ -644,6 +913,11 @@ def classify_primary_destruction_case(
         sequence_id=context.sequence_id,
         normalized_source_logical_ids=context.normalized_source_logical_ids,
         reason_prefix="PRIMARY",
+        required_direction=(
+            SegmentDirection.DOWN
+            if context.candidate_direction == SegmentDirection.UP
+            else SegmentDirection.UP
+        ),
     )
     fractal_type = classify_strict_feature_fractal(*intervals)
     required = (
@@ -652,55 +926,99 @@ def classify_primary_destruction_case(
         else FeatureFractalType.BOTTOM
     )
     if fractal_type != required:
-        return OracleDecision(
+        return _make_primary_evidence(
+            context,
+            (left, center, right),
             DestructionCase.NONE,
             "FEATURE_FRACTAL_REQUIRED",
             fractal_type,
+            None,
         )
+    endpoint = (
+        center.high_endpoint
+        if required == FeatureFractalType.TOP
+        else center.low_endpoint
+    )
     if has_feature_gap(left.interval, center.interval):
-        return OracleDecision(
+        return _make_primary_evidence(
+            context,
+            (left, center, right),
             DestructionCase.SECOND_CASE_PENDING,
             "SECOND_CASE_GAP_PENDING",
             fractal_type,
-            center.interval.high
-            if required == FeatureFractalType.TOP
-            else center.interval.low,
+            endpoint,
         )
-    return OracleDecision(
+    return _make_primary_evidence(
+        context,
+        (left, center, right),
         DestructionCase.FIRST_CASE,
         "FIRST_CASE_NO_GAP_CONFIRMED",
         fractal_type,
-        center.interval.high
-        if required == FeatureFractalType.TOP
-        else center.interval.low,
+        endpoint,
     )
 
 
+def _make_primary_evidence(
+    context: PrimarySequenceContext,
+    elements: tuple[
+        FeatureElementRuleInput,
+        FeatureElementRuleInput,
+        FeatureElementRuleInput,
+    ],
+    destruction_case: DestructionCase,
+    reason_code: str,
+    fractal_type: FeatureFractalType,
+    endpoint: FeatureEndpointEvidence | None,
+) -> PrimaryDestructionEvidence:
+    element_ids = tuple(item.logical_id for item in elements)
+    key = _primary_evidence_key(
+        destruction_case,
+        context.candidate_direction,
+        context.sequence_id,
+        element_ids,
+        fractal_type,
+        endpoint,
+    )
+    return PrimaryDestructionEvidence(
+        key,
+        destruction_case,
+        reason_code,
+        context.candidate_direction,
+        context.sequence_id,
+        element_ids,
+        fractal_type,
+        endpoint,
+    )
+
+
+def build_pending_second_case_context(
+    primary_evidence: PrimaryDestructionEvidence,
+    *,
+    secondary_sequence_id: str,
+) -> PendingSecondCaseContext:
+    return PendingSecondCaseContext(primary_evidence, secondary_sequence_id)
+
+
 def classify_secondary_confirmation(
-    original_direction: SegmentDirection,
     left: FeatureElementRuleInput,
     center: FeatureElementRuleInput,
     right: FeatureElementRuleInput,
     *,
     context: SecondarySequenceContext,
-) -> OracleDecision:
-    if not isinstance(original_direction, SegmentDirection):
-        raise SegmentRuleContractError("valid original direction required")
+) -> SecondaryConfirmationEvidence | OracleDecision:
     if not isinstance(context, SecondarySequenceContext):
         raise SegmentRuleContractError("secondary sequence context required")
-    if context.pending.primary_case != DestructionCase.SECOND_CASE_PENDING:
-        raise SegmentRuleContractError("SECOND_CASE_PENDING evidence required")
-    if context.pending.original_direction != original_direction:
-        raise SegmentRuleContractError("SECOND_CASE_DIRECTION_MISMATCH")
+    original_direction = context.pending.original_direction
     intervals = _validate_standard_element_window(
         left,
         center,
         right,
-        sequence_id=context.pending.sequence_id,
+        sequence_id=context.pending.secondary_sequence_id,
         normalized_source_logical_ids=context.normalized_source_logical_ids,
         reason_prefix="SECOND_SEQUENCE",
+        required_direction=original_direction,
     )
-    if left.start_endpoint_id != context.pending.pending_endpoint.endpoint_id:
+    if left.start_endpoint != context.pending.pending_endpoint:
         raise SegmentRuleContractError("SECOND_SEQUENCE_ENDPOINT_NOT_ADJACENT")
     fractal_type = classify_strict_feature_fractal(*intervals)
     required = (
@@ -714,13 +1032,25 @@ def classify_secondary_confirmation(
             "SECOND_SEQUENCE_FRACTAL_PENDING",
             fractal_type,
         )
-    return OracleDecision(
-        DestructionCase.SECOND_CASE_CONFIRMED,
-        "SECOND_SEQUENCE_FRACTAL_CONFIRMED",
+    element_ids = tuple(item.logical_id for item in (left, center, right))
+    confirmed_at_bar = right.visible_at_bar_index
+    key = _secondary_evidence_key(
+        context.pending.primary_evidence.evidence_key,
+        context.pending.pending_endpoint.endpoint_id,
+        context.pending.secondary_sequence_id,
+        element_ids,
         fractal_type,
-        center.interval.low
-        if required == FeatureFractalType.BOTTOM
-        else center.interval.high,
+        confirmed_at_bar,
+    )
+    return SecondaryConfirmationEvidence(
+        key,
+        context.pending.primary_evidence.evidence_key,
+        context.pending.pending_endpoint.endpoint_id,
+        context.pending.secondary_sequence_id,
+        element_ids,
+        (left, center, right),
+        fractal_type,
+        confirmed_at_bar,
     )
 
 
@@ -728,47 +1058,153 @@ def classify_pending_second_case_invalidation(
     context: PendingSecondCaseContext,
     *,
     extreme_evidence: OriginalDirectionExtremeEvidence,
-    secondary_confirmed_at_bar: int | None,
 ) -> OracleDecision:
-    """Classify DS-CASE2-FAIL without requiring completed secondary evidence."""
+    return resolve_second_case_outcome(
+        context,
+        secondary_confirmation=None,
+        extreme_evidence=extreme_evidence,
+    )
+
+
+def resolve_second_case_outcome(
+    context: PendingSecondCaseContext,
+    *,
+    secondary_confirmation: SecondaryConfirmationEvidence | None,
+    extreme_evidence: OriginalDirectionExtremeEvidence | None,
+) -> OracleDecision:
     if not isinstance(context, PendingSecondCaseContext):
         raise SegmentRuleContractError("pending second-case context required")
-    if context.primary_case != DestructionCase.SECOND_CASE_PENDING:
-        raise SegmentRuleContractError("SECOND_CASE_PENDING evidence required")
-    if not isinstance(extreme_evidence, OriginalDirectionExtremeEvidence):
-        raise SegmentRuleContractError("original-direction extreme evidence required")
-    if (
-        extreme_evidence.observed_at_bar_index
-        <= context.pending_endpoint.bar_index
-    ):
-        raise SegmentRuleContractError("extreme evidence must follow pending endpoint")
-    if (
-        secondary_confirmed_at_bar is not None
-        and (
-            type(secondary_confirmed_at_bar) is not int
-            or secondary_confirmed_at_bar < 0
+    primary_key = context.primary_evidence.evidence_key
+    endpoint = context.pending_endpoint
+    if secondary_confirmation is not None:
+        if not isinstance(secondary_confirmation, SecondaryConfirmationEvidence):
+            raise SegmentRuleContractError(
+                "secondary confirmation evidence required"
+            )
+        if secondary_confirmation.primary_evidence_key != primary_key:
+            raise SegmentRuleContractError("SECONDARY_PRIMARY_EVIDENCE_KEY_MISMATCH")
+        if secondary_confirmation.pending_endpoint_id != endpoint.endpoint_id:
+            raise SegmentRuleContractError("SECONDARY_PENDING_ENDPOINT_MISMATCH")
+        if (
+            secondary_confirmation.secondary_sequence_id
+            != context.secondary_sequence_id
+        ):
+            raise SegmentRuleContractError("SECONDARY_SEQUENCE_ID_MISMATCH")
+        required_secondary_fractal = (
+            FeatureFractalType.BOTTOM
+            if context.original_direction == SegmentDirection.UP
+            else FeatureFractalType.TOP
         )
+        if (
+            secondary_confirmation.feature_fractal_type
+            != required_secondary_fractal
+        ):
+            raise SegmentRuleContractError(
+                "SECONDARY_CONFIRMATION_FRACTAL_MISMATCH"
+            )
+        if secondary_confirmation.confirmed_at_bar < endpoint.bar_index:
+            raise SegmentRuleContractError(
+                "secondary confirmation precedes pending endpoint"
+            )
+        _validate_standard_element_window(
+            *secondary_confirmation.feature_elements,
+            sequence_id=context.secondary_sequence_id,
+            normalized_source_logical_ids=tuple(
+                source
+                for item in secondary_confirmation.feature_elements
+                for source in item.interval.source_stroke_logical_ids
+            ),
+            reason_prefix="SECOND_SEQUENCE",
+            required_direction=context.original_direction,
+        )
+        if secondary_confirmation.feature_elements[0].start_endpoint != endpoint:
+            raise SegmentRuleContractError(
+                "SECOND_SEQUENCE_ENDPOINT_NOT_ADJACENT"
+            )
+        actual_fractal = classify_strict_feature_fractal(
+            *tuple(
+                item.interval
+                for item in secondary_confirmation.feature_elements
+            )
+        )
+        if actual_fractal != secondary_confirmation.feature_fractal_type:
+            raise SegmentRuleContractError(
+                "secondary confirmation fractal evidence mismatch"
+            )
+    strict_extreme = False
+    if extreme_evidence is not None:
+        if not isinstance(extreme_evidence, OriginalDirectionExtremeEvidence):
+            raise SegmentRuleContractError("original-direction extreme evidence required")
+        if extreme_evidence.primary_evidence_key != primary_key:
+            raise SegmentRuleContractError("EXTREME_PRIMARY_EVIDENCE_KEY_MISMATCH")
+        if extreme_evidence.pending_endpoint_id != endpoint.endpoint_id:
+            raise SegmentRuleContractError("EXTREME_PENDING_ENDPOINT_MISMATCH")
+        if extreme_evidence.observed_at_bar_index <= endpoint.bar_index:
+            raise SegmentRuleContractError(
+                "extreme evidence must follow pending endpoint"
+            )
+        strict_extreme = (
+            extreme_evidence.observed_extreme_price > endpoint.price
+            if context.original_direction == SegmentDirection.UP
+            else extreme_evidence.observed_extreme_price < endpoint.price
+        )
+    if secondary_confirmation is not None and (
+        not strict_extreme
+        or extreme_evidence is None
+        or secondary_confirmation.confirmed_at_bar
+        <= extreme_evidence.observed_at_bar_index
     ):
-        raise SegmentRuleContractError("secondary confirmation bar must be int or None")
-    if (
-        secondary_confirmed_at_bar is not None
-        and secondary_confirmed_at_bar <= extreme_evidence.observed_at_bar_index
-    ):
-        raise SegmentRuleContractError("SECOND_CASE_ALREADY_CONFIRMED")
-    is_strict = (
-        extreme_evidence.observed_extreme_price > context.pending_endpoint.price
-        if context.original_direction == SegmentDirection.UP
-        else extreme_evidence.observed_extreme_price < context.pending_endpoint.price
-    )
-    if not is_strict:
         return OracleDecision(
-            DestructionCase.SECOND_CASE_PENDING,
-            "ORIGINAL_DIRECTION_EXTREME_NOT_STRICT",
+            DestructionCase.SECOND_CASE_CONFIRMED,
+            "SECOND_SEQUENCE_FRACTAL_CONFIRMED",
+            secondary_confirmation.feature_fractal_type,
+        )
+    if strict_extreme:
+        return OracleDecision(
+            DestructionCase.INVALIDATED,
+            "PENDING_DESTRUCTION_INVALIDATED",
+            original_segment_continues=True,
         )
     return OracleDecision(
-        DestructionCase.INVALIDATED,
-        "PENDING_DESTRUCTION_INVALIDATED",
-        original_segment_continues=True,
+        DestructionCase.SECOND_CASE_PENDING,
+        "ORIGINAL_DIRECTION_EXTREME_NOT_STRICT"
+        if extreme_evidence is not None
+        else "SECOND_CASE_EVIDENCE_PENDING",
+    )
+
+
+def resolve_second_case_evidence_sequence(
+    context: PendingSecondCaseContext,
+    evidence_sequence: Sequence[
+        SecondaryConfirmationEvidence | OriginalDirectionExtremeEvidence
+    ],
+) -> OracleDecision:
+    """Normalize evidence arrival order before the sole time arbiter runs."""
+    if not isinstance(context, PendingSecondCaseContext):
+        raise SegmentRuleContractError("pending second-case context required")
+    if type(evidence_sequence) is not tuple:
+        raise SegmentRuleContractError("evidence sequence must be an immutable tuple")
+    secondary: SecondaryConfirmationEvidence | None = None
+    extreme: OriginalDirectionExtremeEvidence | None = None
+    for item in evidence_sequence:
+        if isinstance(item, SecondaryConfirmationEvidence):
+            if secondary is not None:
+                raise SegmentRuleContractError(
+                    "duplicate secondary confirmation evidence"
+                )
+            secondary = item
+        elif isinstance(item, OriginalDirectionExtremeEvidence):
+            if extreme is not None:
+                raise SegmentRuleContractError(
+                    "duplicate original-direction extreme evidence"
+                )
+            extreme = item
+        else:
+            raise SegmentRuleContractError("unsupported second-case evidence")
+    return resolve_second_case_outcome(
+        context,
+        secondary_confirmation=secondary,
+        extreme_evidence=extreme,
     )
 
 
@@ -780,6 +1216,7 @@ def _validate_standard_element_window(
     sequence_id: str,
     normalized_source_logical_ids: tuple[str, ...],
     reason_prefix: str,
+    required_direction: SegmentDirection,
 ) -> tuple[PriceInterval, PriceInterval, PriceInterval]:
     elements = (left, center, right)
     if any(not isinstance(item, FeatureElementRuleInput) for item in elements):
@@ -789,11 +1226,27 @@ def _validate_standard_element_window(
         raise SegmentRuleContractError(f"DUPLICATE_{reason_prefix}_ELEMENT_ID")
     if any(item.sequence_id != sequence_id for item in elements):
         raise SegmentRuleContractError(f"{reason_prefix}_ID_MISMATCH")
+    if any(item.direction != required_direction for item in elements):
+        raise SegmentRuleContractError(f"{reason_prefix}_DIRECTION_MISMATCH")
     if any(not item.normalized for item in elements):
         raise SegmentRuleContractError(f"{reason_prefix}_NORMALIZATION_REQUIRED")
-    if left.end_endpoint_id != center.start_endpoint_id:
+    endpoint_registry: dict[str, FeatureEndpointEvidence] = {}
+    for item in elements:
+        for evidence in (
+            item.start_endpoint,
+            item.end_endpoint,
+            item.high_endpoint,
+            item.low_endpoint,
+        ):
+            existing = endpoint_registry.get(evidence.endpoint_id)
+            if existing is not None and existing != evidence:
+                raise SegmentRuleContractError(
+                    f"{reason_prefix}_ENDPOINT_IDENTITY_MISMATCH"
+                )
+            endpoint_registry[evidence.endpoint_id] = evidence
+    if left.end_endpoint != center.start_endpoint:
         raise SegmentRuleContractError(f"{reason_prefix}_LEFT_CENTER_DISCONNECTED")
-    if center.end_endpoint_id != right.start_endpoint_id:
+    if center.end_endpoint != right.start_endpoint:
         raise SegmentRuleContractError(f"{reason_prefix}_CENTER_RIGHT_DISCONNECTED")
     intervals = tuple(item.interval for item in elements)
     if any(not item.source_stroke_logical_ids for item in intervals):

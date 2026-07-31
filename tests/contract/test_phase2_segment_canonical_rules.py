@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import inspect
 import json
 from pathlib import Path
@@ -13,16 +14,18 @@ from chan_parser.contracts.segment_rules import (
     CandidateChoice,
     DestructionCase,
     FeatureElementRuleInput,
+    FeatureEndpointEvidence,
     FeatureFractalType,
     InclusionContext,
     InclusionSeed,
     IntervalRelation,
     LifecycleResolution,
     OriginalDirectionExtremeEvidence,
-    PendingEndpointEvidence,
     PendingSecondCaseContext,
     PriceInterval,
     PrimarySequenceContext,
+    PrimaryDestructionEvidence,
+    SecondaryConfirmationEvidence,
     SecondarySequenceContext,
     SegmentBoundaryInput,
     SegmentDirection,
@@ -30,6 +33,7 @@ from chan_parser.contracts.segment_rules import (
     StrokeRuleInput,
     SequenceBoundaryNature,
     build_feature_sequence,
+    build_pending_second_case_context,
     choose_deterministic_candidate,
     classify_interval_relation,
     classify_primary_destruction_case,
@@ -42,6 +46,8 @@ from chan_parser.contracts.segment_rules import (
     has_feature_gap,
     merge_included_intervals,
     resolve_lifecycle,
+    resolve_second_case_outcome,
+    resolve_second_case_evidence_sequence,
     validate_frozen_prefix_transition,
     validate_segment_boundaries,
     validate_segment_canonical_rules_profile,
@@ -95,6 +101,25 @@ REQUIRED_FIXTURE_IDS = {
     "PRIMARY-EMPTY-PROVENANCE-REJECT-001",
     "PRIMARY-DUPLICATE-PROVENANCE-REJECT-001",
     "PRIMARY-PROVENANCE-MISMATCH-REJECT-001",
+    "PRIMARY-WRONG-FEATURE-DIRECTION-REJECT-001",
+    "PRIMARY-ENDPOINT-PRICE-MISMATCH-REJECT-001",
+    "PRIMARY-ENDPOINT-BAR-MISMATCH-REJECT-001",
+    "PRIMARY-BAR-ORDER-REJECT-001",
+    "SECONDARY-WRONG-FEATURE-DIRECTION-REJECT-001",
+    "SECONDARY-ENDPOINT-EVIDENCE-MISMATCH-REJECT-001",
+    "PENDING-CONTEXT-REQUIRES-PRIMARY-PENDING-EVIDENCE-001",
+    "PENDING-CONTEXT-REJECTS-FIRST-CASE-001",
+    "PENDING-CONTEXT-REJECTS-NONE-CASE-001",
+    "PENDING-CONTEXT-ENDPOINT-DERIVED-001",
+    "PENDING-CONTEXT-CALLER-CANNOT-REPLACE-ENDPOINT-001",
+    "PRIMARY-EVIDENCE-KEY-DETERMINISTIC-001",
+    "CASE2-ARBITRATION-CONFIRM-BEFORE-EXTREME-001",
+    "CASE2-ARBITRATION-EXTREME-BEFORE-CONFIRM-001",
+    "CASE2-ARBITRATION-SAME-BAR-CONFIRM-WINS-001",
+    "CASE2-ARBITRATION-NONSTRICT-THEN-CONFIRM-001",
+    "CASE2-ARBITRATION-EVIDENCE-KEY-MISMATCH-REJECT-001",
+    "CASE2-ARBITRATION-ENDPOINT-MISMATCH-REJECT-001",
+    "CASE2-ARBITRATION-ORDER-INDEPENDENT-001",
 }
 RULE_CLASSIFICATION = {
     "FS-001": "ORIGINAL_CANONICAL_CORE",
@@ -141,89 +166,10 @@ def inclusion_context(
     )
 
 
-def secondary_context(**overrides) -> SecondarySequenceContext:
-    values = {
-        "pending": pending_context(),
-        "normalized_source_logical_ids": (
-            "stroke:a",
-            "stroke:b",
-            "stroke:c",
-        ),
-    }
-    values.update(overrides)
-    return SecondarySequenceContext(**values)
-
-
-def secondary_elements(
-    left_values: tuple[float, float] = (3, 7),
-    center_values: tuple[float, float] = (1, 4),
-    right_values: tuple[float, float] = (2, 6),
-    *,
-    sequence_ids: tuple[str, str, str] = ("second:a", "second:a", "second:a"),
-    element_ids: tuple[str, str, str] = (
-        "element:left",
-        "element:center",
-        "element:right",
-    ),
-    endpoints: tuple[str, str, str, str] = (
-        "endpoint:pending",
-        "endpoint:1",
-        "endpoint:2",
-        "endpoint:3",
-    ),
-    normalized: tuple[bool, bool, bool] = (True, True, True),
-) -> tuple[FeatureElementRuleInput, ...]:
-    provenance = (
-        ("stroke:a",),
-        ("stroke:b",),
-        ("stroke:c",),
-    )
-    values = (left_values, center_values, right_values)
-    return tuple(
-        FeatureElementRuleInput(
-            element_ids[index],
-            sequence_ids[index],
-            endpoints[index],
-            endpoints[index + 1],
-            interval(*values[index], *provenance[index]),
-            normalized[index],
-        )
-        for index in range(3)
-    )
-
-
-def pending_context(
-    direction: SegmentDirection = SegmentDirection.UP,
-    *,
-    endpoint_id: str = "endpoint:pending",
-    defining_sources: tuple[str, ...] = ("stroke:pending",),
-    price: float = 10,
-    bar_index: int = 10,
-) -> PendingSecondCaseContext:
-    return PendingSecondCaseContext(
-        DestructionCase.SECOND_CASE_PENDING,
-        direction,
-        "second:a",
-        PendingEndpointEvidence(
-            endpoint_id,
-            defining_sources,
-            price,
-            bar_index,
-        ),
-    )
-
-
-def extreme_evidence(
-    observed_price: float,
-    observed_bar: int,
-    *,
-    sources: tuple[str, ...] = ("stroke:observed",),
-) -> OriginalDirectionExtremeEvidence:
-    return OriginalDirectionExtremeEvidence(
-        observed_price,
-        observed_bar,
-        sources,
-    )
+def endpoint(
+    endpoint_id: str, price: float, bar_index: int, *sources: str
+) -> FeatureEndpointEvidence:
+    return FeatureEndpointEvidence(endpoint_id, tuple(sources), price, bar_index)
 
 
 def standard_elements(
@@ -237,31 +183,73 @@ def standard_elements(
         "primary:center",
         "primary:right",
     ),
-    endpoints: tuple[str, str, str, str] = (
+    endpoint_ids: tuple[str, str, str, str] = (
         "endpoint:0",
         "endpoint:1",
         "endpoint:2",
         "endpoint:3",
     ),
     normalized: tuple[bool, bool, bool] = (True, True, True),
+    directions: tuple[SegmentDirection, ...] = (SegmentDirection.DOWN,) * 3,
     provenance: tuple[tuple[str, ...], ...] = (
         ("stroke:1",),
         ("stroke:2",),
         ("stroke:3",),
     ),
+    shared_endpoints: tuple[FeatureEndpointEvidence, ...] | None = None,
+    visible_bars: tuple[int, int, int] = (10, 20, 30),
+    extremum_overrides: dict[
+        tuple[int, str], FeatureEndpointEvidence
+    ] | None = None,
 ) -> tuple[FeatureElementRuleInput, ...]:
     values = (left_values, center_values, right_values)
-    return tuple(
-        FeatureElementRuleInput(
+    if shared_endpoints is None:
+        shared_endpoints = tuple(
+            endpoint(
+                endpoint_ids[index],
+                40 - index * 10
+                if directions[0] == SegmentDirection.DOWN
+                else index * 10,
+                index * 10,
+                f"endpoint-source:{index}",
+            )
+            for index in range(4)
+        )
+    extremum_overrides = extremum_overrides or {}
+    elements = []
+    for index in range(3):
+        source = provenance[index][0] if provenance[index] else "missing"
+        high = extremum_overrides.get(
+            (index, "high"),
+            endpoint(
+                f"{element_ids[index]}:high",
+                values[index][1],
+                shared_endpoints[index].bar_index,
+                source,
+            ),
+        )
+        low = extremum_overrides.get(
+            (index, "low"),
+            endpoint(
+                f"{element_ids[index]}:low",
+                values[index][0],
+                shared_endpoints[index].bar_index,
+                source,
+            ),
+        )
+        elements.append(FeatureElementRuleInput(
             element_ids[index],
             sequence_ids[index],
-            endpoints[index],
-            endpoints[index + 1],
+            directions[index],
+            shared_endpoints[index],
+            shared_endpoints[index + 1],
+            high,
+            low,
             interval(*values[index], *provenance[index]),
             normalized[index],
-        )
-        for index in range(3)
-    )
+            visible_bars[index],
+        ))
+    return tuple(elements)
 
 
 def primary_context(
@@ -278,11 +266,188 @@ def classify_primary(
     left: tuple[float, float],
     center: tuple[float, float],
     right: tuple[float, float],
-) -> object:
+) -> PrimaryDestructionEvidence:
+    feature_direction = (
+        SegmentDirection.DOWN
+        if direction == SegmentDirection.UP
+        else SegmentDirection.UP
+    )
     return classify_primary_destruction_case(
-        *standard_elements(left, center, right),
+        *standard_elements(
+            left,
+            center,
+            right,
+            directions=(feature_direction,) * 3,
+        ),
         context=primary_context(direction),
     )
+
+
+def pending_context(
+    direction: SegmentDirection = SegmentDirection.UP,
+    *,
+    endpoint_id: str = "endpoint:pending",
+    defining_sources: tuple[str, ...] = ("stroke:2",),
+    price: float = 10,
+    bar_index: int = 10,
+) -> PendingSecondCaseContext:
+    if direction == SegmentDirection.UP:
+        values = (
+            (price - 9, price - 8),
+            (price - 7, price),
+            (price - 8, price - 2),
+        )
+        endpoint_kind = "high"
+        feature_direction = SegmentDirection.DOWN
+    else:
+        values = (
+            (price + 7, price + 8),
+            (price, price + 6),
+            (price + 3, price + 7),
+        )
+        endpoint_kind = "low"
+        feature_direction = SegmentDirection.UP
+    pending_endpoint = endpoint(
+        endpoint_id, price, bar_index, *defining_sources
+    )
+    shared_prices = (
+        (40, 30, 20, 10)
+        if feature_direction == SegmentDirection.DOWN
+        else (0, 10, 20, 30)
+    )
+    shared = tuple(
+        endpoint(
+            f"primary:shared:{index}",
+            shared_prices[index],
+            bar_index + (index - 1) * 10,
+            f"primary:endpoint-source:{index}",
+        )
+        for index in range(4)
+    )
+    primary = classify_primary_destruction_case(
+        *standard_elements(
+            *values,
+            directions=(feature_direction,) * 3,
+            provenance=(("stroke:1",), defining_sources, ("stroke:3",)),
+            shared_endpoints=shared,
+            visible_bars=(
+                shared[1].bar_index,
+                shared[2].bar_index,
+                shared[3].bar_index,
+            ),
+            extremum_overrides={(1, endpoint_kind): pending_endpoint},
+        ),
+        context=primary_context(
+            direction,
+            provenance=("stroke:1",) + defining_sources + ("stroke:3",),
+        ),
+    )
+    return build_pending_second_case_context(
+        primary,
+        secondary_sequence_id="second:a",
+    )
+
+
+def secondary_elements(
+    left_values: tuple[float, float] = (3, 7),
+    center_values: tuple[float, float] = (1, 4),
+    right_values: tuple[float, float] = (2, 6),
+    *,
+    pending: PendingSecondCaseContext | None = None,
+    sequence_ids: tuple[str, str, str] = ("second:a",) * 3,
+    element_ids: tuple[str, str, str] = (
+        "element:left",
+        "element:center",
+        "element:right",
+    ),
+    normalized: tuple[bool, bool, bool] = (True, True, True),
+    directions: tuple[SegmentDirection, ...] | None = None,
+    visible_bars: tuple[int, int, int] = (40, 50, 60),
+) -> tuple[FeatureElementRuleInput, ...]:
+    pending = pending or pending_context()
+    directions = directions or (pending.original_direction,) * 3
+    step = 10 if directions[0] == SegmentDirection.UP else -10
+    shared = (
+        pending.pending_endpoint,
+        endpoint(
+            "secondary:end:1",
+            pending.pending_endpoint.price + step,
+            30,
+            "endpoint-source:s1",
+        ),
+        endpoint(
+            "secondary:end:2",
+            pending.pending_endpoint.price + 2 * step,
+            40,
+            "endpoint-source:s2",
+        ),
+        endpoint(
+            "secondary:end:3",
+            pending.pending_endpoint.price + 3 * step,
+            50,
+            "endpoint-source:s3",
+        ),
+    )
+    return standard_elements(
+        left_values,
+        center_values,
+        right_values,
+        sequence_ids=sequence_ids,
+        element_ids=element_ids,
+        normalized=normalized,
+        directions=directions,
+        provenance=(("stroke:a",), ("stroke:b",), ("stroke:c",)),
+        shared_endpoints=shared,
+        visible_bars=visible_bars,
+    )
+
+
+def secondary_context(
+    *,
+    pending: PendingSecondCaseContext | None = None,
+    normalized_source_logical_ids: tuple[str, ...] = (
+        "stroke:a",
+        "stroke:b",
+        "stroke:c",
+    ),
+) -> SecondarySequenceContext:
+    return SecondarySequenceContext(
+        pending or pending_context(),
+        normalized_source_logical_ids,
+    )
+
+
+def extreme_evidence(
+    context: PendingSecondCaseContext,
+    observed_price: float,
+    observed_bar: int,
+    *,
+    sources: tuple[str, ...] = ("stroke:observed",),
+    primary_evidence_key: str | None = None,
+    pending_endpoint_id: str | None = None,
+) -> OriginalDirectionExtremeEvidence:
+    return OriginalDirectionExtremeEvidence(
+        primary_evidence_key or context.primary_evidence.evidence_key,
+        pending_endpoint_id or context.pending_endpoint.endpoint_id,
+        observed_price,
+        observed_bar,
+        sources,
+    )
+
+
+def confirmation_evidence(
+    context: PendingSecondCaseContext,
+    confirmed_at_bar: int = 60,
+) -> SecondaryConfirmationEvidence:
+    result = classify_secondary_confirmation(
+        *secondary_elements(
+            pending=context,
+            visible_bars=(40, 50, confirmed_at_bar),
+        ),
+        context=secondary_context(pending=context),
+    )
+    assert isinstance(result, SecondaryConfirmationEvidence)
+    return result
 
 
 def all_fixture_cases() -> list[dict]:
@@ -483,7 +648,8 @@ def test_every_fixture_executes_against_reference_oracle(case):
             tuple(data["right"]),
         )
         assert result.destruction_case.value == expected["case"]
-        assert result.endpoint_price == expected["endpoint"]
+        assert result.endpoint is not None
+        assert result.endpoint.price == expected["endpoint"]
         assert result.reason_code == case["reason_code"]
         return
     if fixture_id == "CASE1-PEN-ONLY-PENDING-001":
@@ -535,7 +701,6 @@ def test_every_fixture_executes_against_reference_oracle(case):
         "CASE2-GAP-NOT-CLOSED-CONFIRM-001",
     }:
         result = classify_secondary_confirmation(
-            SegmentDirection(data["original_direction"]),
             *secondary_elements(
                 tuple(data["left"]),
                 tuple(data["center"]),
@@ -543,9 +708,15 @@ def test_every_fixture_executes_against_reference_oracle(case):
             ),
             context=secondary_context(),
         )
-        assert result.destruction_case.value == expected["case"]
+        assert isinstance(result, SecondaryConfirmationEvidence)
+        outcome = resolve_second_case_outcome(
+            secondary_context().pending,
+            secondary_confirmation=result,
+            extreme_evidence=None,
+        )
+        assert outcome.destruction_case.value == expected["case"]
         assert result.feature_fractal_type.value == data["second_sequence_fractal"]
-        assert result.reason_code == case["reason_code"]
+        assert outcome.reason_code == case["reason_code"]
         return
     if fixture_id.startswith("CASE2-") and fixture_id in {
         "CASE2-UP-STRICT-NEW-HIGH-INVALIDATE-001",
@@ -558,21 +729,22 @@ def test_every_fixture_executes_against_reference_oracle(case):
     }:
         direction = SegmentDirection(data["original_direction"])
         def classify_fixture_extreme():
-            return classify_pending_second_case_invalidation(
-                pending_context(
-                    direction,
-                    endpoint_id=data["pending_endpoint_id"],
-                    defining_sources=tuple(
-                        data["pending_endpoint_source_logical_ids"]
-                    ),
-                    price=data["pending_endpoint_price"],
-                    bar_index=data["pending_endpoint_bar_index"],
+            context = pending_context(
+                direction,
+                endpoint_id=data["pending_endpoint_id"],
+                defining_sources=tuple(
+                    data["pending_endpoint_source_logical_ids"]
                 ),
+                price=data["pending_endpoint_price"],
+                bar_index=data["pending_endpoint_bar_index"],
+            )
+            return classify_pending_second_case_invalidation(
+                context,
                 extreme_evidence=extreme_evidence(
+                    context,
                     data["observed_extreme_price"],
                     data["observed_at_bar_index"],
                 ),
-                secondary_confirmed_at_bar=data["secondary_confirmed_at_bar"],
             )
         if expected.get("accepted") is False:
             with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
@@ -605,39 +777,46 @@ def test_every_fixture_executes_against_reference_oracle(case):
         mutation = data["mutation"]
         kwargs = {}
         if mutation == "unrelated_left_start":
-            kwargs["endpoints"] = (
-                "endpoint:unrelated", "endpoint:1", "endpoint:2", "endpoint:3"
-            )
-        elif mutation == "disconnect_left_center":
             elements = list(secondary_elements())
-            elements[1] = FeatureElementRuleInput(
-                elements[1].logical_id,
-                elements[1].sequence_id,
-                "endpoint:gap",
-                elements[1].end_endpoint_id,
-                elements[1].interval,
-                elements[1].normalized,
+            elements[0] = replace(
+                elements[0],
+                start_endpoint=replace(
+                    elements[0].start_endpoint,
+                    endpoint_id="endpoint:unrelated",
+                ),
             )
             with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
                 classify_secondary_confirmation(
-                    SegmentDirection.UP,
+                    *elements,
+                    context=secondary_context(),
+                )
+            return
+        elif mutation == "disconnect_left_center":
+            elements = list(secondary_elements())
+            elements[1] = replace(
+                elements[1],
+                start_endpoint=replace(
+                    elements[1].start_endpoint,
+                    endpoint_id="endpoint:gap",
+                ),
+            )
+            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
+                classify_secondary_confirmation(
                     *elements,
                     context=secondary_context(),
                 )
             return
         elif mutation == "disconnect_center_right":
             elements = list(secondary_elements())
-            elements[2] = FeatureElementRuleInput(
-                elements[2].logical_id,
-                elements[2].sequence_id,
-                "endpoint:gap",
-                elements[2].end_endpoint_id,
-                elements[2].interval,
-                elements[2].normalized,
+            elements[2] = replace(
+                elements[2],
+                start_endpoint=replace(
+                    elements[2].start_endpoint,
+                    endpoint_id="endpoint:gap",
+                ),
             )
             with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
                 classify_secondary_confirmation(
-                    SegmentDirection.UP,
                     *elements,
                     context=secondary_context(),
                 )
@@ -652,12 +831,16 @@ def test_every_fixture_executes_against_reference_oracle(case):
             )
         with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
             classify_secondary_confirmation(
-                SegmentDirection.UP,
                 *secondary_elements(**kwargs),
                 context=secondary_context(),
             )
         return
     if fixture_id.startswith("PRIMARY-"):
+        if fixture_id == "PRIMARY-EVIDENCE-KEY-DETERMINISTIC-001":
+            first = pending_context().primary_evidence
+            second = pending_context().primary_evidence
+            assert first.evidence_key == second.evidence_key
+            return
         mutation = data["mutation"]
         element_kwargs = {}
         context_kwargs = {}
@@ -673,13 +856,12 @@ def test_every_fixture_executes_against_reference_oracle(case):
             element_kwargs["normalized"] = (True, False, True)
         elif mutation == "disconnect_left_center":
             elements = list(standard_elements((1, 2), (3, 7), (2, 5)))
-            elements[1] = FeatureElementRuleInput(
-                elements[1].logical_id,
-                elements[1].sequence_id,
-                "endpoint:gap",
-                elements[1].end_endpoint_id,
-                elements[1].interval,
-                elements[1].normalized,
+            elements[1] = replace(
+                elements[1],
+                start_endpoint=replace(
+                    elements[1].start_endpoint,
+                    endpoint_id="endpoint:gap",
+                ),
             )
             with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
                 classify_primary_destruction_case(
@@ -689,13 +871,12 @@ def test_every_fixture_executes_against_reference_oracle(case):
             return
         elif mutation == "disconnect_center_right":
             elements = list(standard_elements((1, 2), (3, 7), (2, 5)))
-            elements[2] = FeatureElementRuleInput(
-                elements[2].logical_id,
-                elements[2].sequence_id,
-                "endpoint:gap",
-                "endpoint:3",
-                elements[2].interval,
-                elements[2].normalized,
+            elements[2] = replace(
+                elements[2],
+                start_endpoint=replace(
+                    elements[2].start_endpoint,
+                    endpoint_id="endpoint:gap",
+                ),
             )
             with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
                 classify_primary_destruction_case(
@@ -723,6 +904,40 @@ def test_every_fixture_executes_against_reference_oracle(case):
             context_kwargs["provenance"] = (
                 "stroke:1", "stroke:2", "stroke:other"
             )
+        elif mutation == "wrong_feature_direction":
+            element_kwargs["directions"] = (SegmentDirection.UP,) * 3
+        elif mutation in {"endpoint_price_mismatch", "endpoint_bar_mismatch"}:
+            elements = list(standard_elements((1, 2), (3, 7), (2, 5)))
+            shared = elements[1].start_endpoint
+            elements[1] = replace(
+                elements[1],
+                start_endpoint=replace(
+                    shared,
+                    price=shared.price + 1
+                    if mutation == "endpoint_price_mismatch"
+                    else shared.price,
+                    bar_index=shared.bar_index - 1
+                    if mutation == "endpoint_bar_mismatch"
+                    else shared.bar_index,
+                ),
+            )
+            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
+                classify_primary_destruction_case(
+                    *elements,
+                    context=primary_context(SegmentDirection.UP),
+                )
+            return
+        elif mutation == "bar_order":
+            elements = list(standard_elements((1, 2), (3, 7), (2, 5)))
+            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
+                replace(
+                    elements[0],
+                    end_endpoint=replace(
+                        elements[0].end_endpoint,
+                        bar_index=elements[0].start_endpoint.bar_index,
+                    ),
+                )
+            return
         with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
             classify_primary_destruction_case(
                 *standard_elements((1, 2), (3, 7), (2, 5), **element_kwargs),
@@ -731,6 +946,126 @@ def test_every_fixture_executes_against_reference_oracle(case):
                     **context_kwargs,
                 ),
             )
+        return
+    if fixture_id.startswith("SECONDARY-"):
+        mutation = data["mutation"]
+        context = secondary_context()
+        elements = list(secondary_elements(pending=context.pending))
+        if mutation == "wrong_feature_direction":
+            elements = list(
+                secondary_elements(
+                    pending=context.pending,
+                    directions=(SegmentDirection.DOWN,) * 3,
+                )
+            )
+        elif mutation == "endpoint_evidence_mismatch":
+            elements[1] = replace(
+                elements[1],
+                start_endpoint=replace(
+                    elements[1].start_endpoint,
+                    price=elements[1].start_endpoint.price + 1,
+                ),
+            )
+        with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
+            classify_secondary_confirmation(*elements, context=context)
+        return
+    if fixture_id.startswith("PENDING-CONTEXT-"):
+        if fixture_id == "PENDING-CONTEXT-REQUIRES-PRIMARY-PENDING-EVIDENCE-001":
+            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
+                PendingSecondCaseContext(object(), "second:a")
+            return
+        if fixture_id == "PENDING-CONTEXT-REJECTS-FIRST-CASE-001":
+            primary = classify_primary(
+                SegmentDirection.UP, (3, 5), (4, 8), (2, 6)
+            )
+            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
+                build_pending_second_case_context(
+                    primary, secondary_sequence_id="second:a"
+                )
+            return
+        if fixture_id == "PENDING-CONTEXT-REJECTS-NONE-CASE-001":
+            primary = classify_primary(
+                SegmentDirection.UP, (3, 7), (1, 4), (2, 6)
+            )
+            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
+                build_pending_second_case_context(
+                    primary, secondary_sequence_id="second:a"
+                )
+            return
+        if fixture_id == "PENDING-CONTEXT-ENDPOINT-DERIVED-001":
+            context = pending_context()
+            assert context.pending_endpoint is context.primary_evidence.endpoint
+            return
+        if fixture_id == "PENDING-CONTEXT-CALLER-CANNOT-REPLACE-ENDPOINT-001":
+            parameters = inspect.signature(PendingSecondCaseContext).parameters
+            assert all(name not in parameters for name in data[
+                "forbidden_constructor_fields"
+            ])
+            context = build_pending_second_case_context(
+                pending_context().primary_evidence,
+                secondary_sequence_id="second:a",
+            )
+            outcome = resolve_second_case_outcome(
+                context,
+                secondary_confirmation=None,
+                extreme_evidence=None,
+            )
+            assert outcome.destruction_case == DestructionCase.SECOND_CASE_PENDING
+            return
+    if fixture_id.startswith("CASE2-ARBITRATION-"):
+        context = pending_context()
+        if data.get("mutation") == "evidence_key_mismatch":
+            bad = extreme_evidence(
+                context,
+                11,
+                70,
+                primary_evidence_key="primary:other",
+            )
+            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
+                resolve_second_case_outcome(
+                    context,
+                    secondary_confirmation=None,
+                    extreme_evidence=bad,
+                )
+            return
+        if data.get("mutation") == "endpoint_mismatch":
+            bad = extreme_evidence(
+                context,
+                11,
+                70,
+                pending_endpoint_id="endpoint:other",
+            )
+            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
+                resolve_second_case_outcome(
+                    context,
+                    secondary_confirmation=None,
+                    extreme_evidence=bad,
+                )
+            return
+        confirmation = confirmation_evidence(context, data["confirmation_bar"])
+        extreme = extreme_evidence(
+            context,
+            data["extreme_price"],
+            data["extreme_bar"],
+        )
+        first = resolve_second_case_outcome(
+            context,
+            secondary_confirmation=confirmation,
+            extreme_evidence=extreme,
+        )
+        if fixture_id == "CASE2-ARBITRATION-ORDER-INDEPENDENT-001":
+            confirmation_first = resolve_second_case_evidence_sequence(
+                context,
+                (confirmation, extreme),
+            )
+            extreme_first = resolve_second_case_evidence_sequence(
+                context,
+                (extreme, confirmation),
+            )
+            assert first == confirmation_first == extreme_first
+            return
+        assert first.destruction_case.value == expected["case"]
+        assert first.reason_code == case["reason_code"]
         return
     if fixture_id.startswith("WINNER-"):
         candidates = [
@@ -965,8 +1300,9 @@ def test_first_case_requires_complete_directional_fractal_and_no_gap():
         (1, 4),
         (2, 6),
     )
-    assert (up.destruction_case, up.endpoint_price) == (DestructionCase.FIRST_CASE, 8)
-    assert (down.destruction_case, down.endpoint_price) == (DestructionCase.FIRST_CASE, 1)
+    assert up.endpoint is not None and down.endpoint is not None
+    assert (up.destruction_case, up.endpoint.price) == (DestructionCase.FIRST_CASE, 8)
+    assert (down.destruction_case, down.endpoint.price) == (DestructionCase.FIRST_CASE, 1)
 
 
 def test_pen_break_only_remains_provisional():
@@ -998,27 +1334,25 @@ def test_second_case_is_pending_when_primary_fractal_has_gap():
 
 def test_secondary_fractal_confirms_without_original_gap_closure_input():
     confirmed = classify_secondary_confirmation(
-        SegmentDirection.UP,
         *secondary_elements(),
         context=secondary_context(),
     )
-    assert confirmed.destruction_case == DestructionCase.SECOND_CASE_CONFIRMED
+    assert isinstance(confirmed, SecondaryConfirmationEvidence)
     assert confirmed.feature_fractal_type == FeatureFractalType.BOTTOM
 
 
 def test_pending_second_case_is_invalidated_by_new_original_extreme():
+    context = pending_context(SegmentDirection.DOWN, price=10, bar_index=10)
     result = classify_pending_second_case_invalidation(
-        pending_context(SegmentDirection.DOWN, price=10, bar_index=10),
-        extreme_evidence=extreme_evidence(9, 20),
-        secondary_confirmed_at_bar=None,
+        context,
+        extreme_evidence=extreme_evidence(context, 9, 20),
     )
     assert result.destruction_case == DestructionCase.INVALIDATED
     assert result.reason_code == "PENDING_DESTRUCTION_INVALIDATED"
-    with pytest.raises(SegmentRuleContractError, match="ALREADY_CONFIRMED"):
+    with pytest.raises(SegmentRuleContractError, match="follow pending endpoint"):
         classify_pending_second_case_invalidation(
-            pending_context(SegmentDirection.DOWN, price=10, bar_index=10),
-            extreme_evidence=extreme_evidence(9, 20),
-            secondary_confirmed_at_bar=19,
+            context,
+            extreme_evidence=extreme_evidence(context, 9, 10),
         )
 
 
@@ -1102,35 +1436,26 @@ def test_case1_failed_pen_break_is_invalidated_without_reverse_segment():
 
 
 def test_secondary_confirmation_requires_pending_normalized_adjacent_evidence():
-    evidence = secondary_elements()
     with pytest.raises(SegmentRuleContractError, match="PENDING"):
-        classify_secondary_confirmation(
-            SegmentDirection.UP,
-            *evidence,
-            context=secondary_context(
-                pending=PendingSecondCaseContext(
-                    DestructionCase.FIRST_CASE,
-                    SegmentDirection.UP,
-                    "second:a",
-                    PendingEndpointEvidence(
-                        "endpoint:pending",
-                        ("stroke:pending",),
-                        10,
-                        10,
-                    ),
-                )
+        PendingSecondCaseContext(
+            classify_primary(
+                SegmentDirection.UP,
+                (3, 5),
+                (4, 8),
+                (2, 6),
             ),
+            "second:a",
         )
     with pytest.raises(SegmentRuleContractError, match="NORMALIZATION"):
         classify_secondary_confirmation(
-            SegmentDirection.UP,
             *secondary_elements(normalized=(True, False, True)),
             context=secondary_context(),
         )
     with pytest.raises(SegmentRuleContractError, match="DIRECTION_MISMATCH"):
         classify_secondary_confirmation(
-            SegmentDirection.DOWN,
-            *evidence,
+            *secondary_elements(
+                directions=(SegmentDirection.DOWN,) * 3
+            ),
             context=secondary_context(),
         )
 
@@ -1211,7 +1536,6 @@ def test_provenance_is_strictly_immutable_and_secondary_sources_are_unique():
         PriceInterval(1, 2, ["stroke:a"])
     with pytest.raises(SegmentRuleContractError, match="duplicate normalized"):
         classify_secondary_confirmation(
-            SegmentDirection.UP,
             *secondary_elements(),
             context=secondary_context(
                 normalized_source_logical_ids=(
@@ -1324,6 +1648,8 @@ def test_candidate_bar_indices_are_nonnegative_exact_ints(bad_index):
 )
 def test_extreme_evidence_rejects_invalid_prices_and_bar_indices(kwargs):
     values = {
+        "primary_evidence_key": "primary:key",
+        "pending_endpoint_id": "endpoint:pending",
         "observed_extreme_price": 11,
         "observed_at_bar_index": 20,
         "observed_source_stroke_logical_ids": ("stroke:observed",),
@@ -1369,13 +1695,12 @@ def test_endpoint_defining_strokes_are_distinct_from_left_element_provenance():
         context.pending.pending_endpoint.defining_stroke_logical_ids
     ).isdisjoint(left.interval.source_stroke_logical_ids)
     result = classify_secondary_confirmation(
-        SegmentDirection.UP,
         left,
         center,
         right,
         context=context,
     )
-    assert result.destruction_case == DestructionCase.SECOND_CASE_CONFIRMED
+    assert isinstance(result, SecondaryConfirmationEvidence)
 
 
 @pytest.mark.parametrize(
@@ -1439,12 +1764,12 @@ def test_extreme_evidence_cannot_replace_pending_price_or_bar():
     parameters = inspect.signature(OriginalDirectionExtremeEvidence).parameters
     assert "pending_endpoint_price" not in parameters
     assert "pending_endpoint_bar_index" not in parameters
-    assert "pending_endpoint_id" not in parameters
+    assert "original_direction" not in parameters
 
 
 def test_pending_context_rejects_duplicate_endpoint_provenance():
-    with pytest.raises(SegmentRuleContractError, match="duplicate pending"):
-        PendingEndpointEvidence(
+    with pytest.raises(SegmentRuleContractError, match="duplicate feature"):
+        FeatureEndpointEvidence(
             "endpoint:pending",
             ("stroke:pending", "stroke:pending"),
             10,
@@ -1455,7 +1780,6 @@ def test_pending_context_rejects_duplicate_endpoint_provenance():
 def test_secondary_confirmation_rejects_invalid_context_type():
     with pytest.raises(SegmentRuleContractError, match="context required"):
         classify_secondary_confirmation(
-            SegmentDirection.UP,
             *secondary_elements(),
             context=None,
         )
@@ -1463,10 +1787,10 @@ def test_secondary_confirmation_rejects_invalid_context_type():
 
 def test_pending_invalidation_rejects_invalid_context_type():
     with pytest.raises(SegmentRuleContractError, match="context required"):
+        valid_context = pending_context()
         classify_pending_second_case_invalidation(
             None,
-            extreme_evidence=extreme_evidence(11, 20),
-            secondary_confirmed_at_bar=None,
+            extreme_evidence=extreme_evidence(valid_context, 11, 20),
         )
 
 
@@ -1507,22 +1831,20 @@ def test_pending_endpoint_evidence_fails_closed(kwargs):
     }
     values.update(kwargs)
     with pytest.raises(SegmentRuleContractError):
-        PendingEndpointEvidence(**values)
+        FeatureEndpointEvidence(**values)
 
 
 def test_pending_endpoint_is_single_source_for_price_and_bar():
     context = pending_context(SegmentDirection.UP, price=100, bar_index=50)
     pending = classify_pending_second_case_invalidation(
         context,
-        extreme_evidence=extreme_evidence(99, 51),
-        secondary_confirmed_at_bar=None,
+        extreme_evidence=extreme_evidence(context, 99, 51),
     )
     assert pending.destruction_case == DestructionCase.SECOND_CASE_PENDING
     with pytest.raises(SegmentRuleContractError, match="follow pending endpoint"):
         classify_pending_second_case_invalidation(
             context,
-            extreme_evidence=extreme_evidence(101, 50),
-            secondary_confirmed_at_bar=None,
+            extreme_evidence=extreme_evidence(context, 101, 50),
         )
 
 
@@ -1530,8 +1852,101 @@ def test_huge_integers_do_not_leak_native_overflow():
     huge = 10**309
     assert PriceInterval(0, huge).high == huge
     evidence = OriginalDirectionExtremeEvidence(
+        "primary:key",
+        "endpoint:pending",
         huge,
         20,
         ("stroke:observed",),
     )
     assert evidence.observed_extreme_price == huge
+
+
+def test_primary_evidence_key_binds_order_direction_sequence_and_endpoint():
+    evidence = pending_context().primary_evidence
+    repeated = pending_context().primary_evidence
+    assert evidence.evidence_key == repeated.evidence_key
+    with pytest.raises(SegmentRuleContractError, match="key mismatch"):
+        replace(evidence, evidence_key="forged")
+
+
+def test_pending_context_exposes_only_primary_derived_baseline():
+    context = pending_context()
+    assert context.pending_endpoint is context.primary_evidence.endpoint
+    assert context.original_direction == context.primary_evidence.candidate_direction
+    assert set(inspect.signature(PendingSecondCaseContext).parameters) == {
+        "primary_evidence",
+        "secondary_sequence_id",
+    }
+
+
+def test_secondary_confirmation_binds_primary_endpoint_and_visibility_time():
+    context = pending_context()
+    evidence = confirmation_evidence(context, 73)
+    assert evidence.primary_evidence_key == context.primary_evidence.evidence_key
+    assert evidence.pending_endpoint_id == context.pending_endpoint.endpoint_id
+    assert evidence.confirmed_at_bar == 73
+    with pytest.raises(SegmentRuleContractError, match="key mismatch"):
+        replace(evidence, evidence_key="forged")
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [object(), "not-evidence"],
+)
+def test_evidence_chain_public_entries_fail_closed(invalid):
+    context = pending_context()
+    with pytest.raises(SegmentRuleContractError):
+        resolve_second_case_outcome(
+            context,
+            secondary_confirmation=invalid,
+            extreme_evidence=None,
+        )
+    with pytest.raises(SegmentRuleContractError):
+        resolve_second_case_outcome(
+            context,
+            secondary_confirmation=None,
+            extreme_evidence=invalid,
+        )
+
+
+def test_arbitration_is_order_independent_and_same_bar_confirmation_wins():
+    context = pending_context()
+    confirmation = confirmation_evidence(context, 70)
+    extreme = extreme_evidence(context, 11, 70)
+    confirmation_first = resolve_second_case_evidence_sequence(
+        context,
+        (confirmation, extreme),
+    )
+    extreme_first = resolve_second_case_evidence_sequence(
+        context,
+        (extreme, confirmation),
+    )
+    assert confirmation_first == extreme_first
+    assert confirmation_first.destruction_case == (
+        DestructionCase.SECOND_CASE_CONFIRMED
+    )
+
+
+def test_feature_element_rejects_endpoint_identity_rebinding():
+    element = standard_elements((1, 2), (3, 7), (2, 5))[0]
+    with pytest.raises(SegmentRuleContractError, match="identity evidence mismatch"):
+        replace(
+            element,
+            high_endpoint=replace(
+                element.high_endpoint,
+                endpoint_id=element.start_endpoint.endpoint_id,
+            ),
+        )
+
+
+def test_feature_element_direction_requires_strict_price_change():
+    element = standard_elements((1, 2), (3, 7), (2, 5))[0]
+    flat_price = element.start_endpoint.price
+    with pytest.raises(SegmentRuleContractError, match="direction mismatch"):
+        replace(
+            element,
+            end_endpoint=replace(
+                element.end_endpoint,
+                price=flat_price,
+            ),
+        )

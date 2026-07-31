@@ -125,15 +125,13 @@ theory. The accompanying reference oracle is stateless and non-production.
   in the original direction invalidates the pending endpoint and the original
   segment continues. Strictness is calculated from direction and finite prices:
   UP requires `observed > pending`, DOWN requires `observed < pending`.
-- input: Pending second case with one immutable endpoint evidence object
-  containing endpoint ID, defining-stroke provenance, pending price, and pending
-  bar; separate observed price/bar/provenance evidence; and optional
-  secondary-confirmation bar.
+- input: Pending second case derived from identified primary destruction
+  evidence; separate observed price/bar/provenance evidence bound to the same
+  primary evidence key and pending endpoint ID.
 - output: `PENDING_DESTRUCTION_INVALIDATED`.
 - fail_closed_condition: Caller-supplied boolean conclusions or duplicate
   pending price/bar inputs, nonfinite prices, invalid or non-increasing bar
-  order, equality treated as strict, or secondary confirmation at/before the
-  observed extreme.
+  order, equality treated as strict, or evidence-key/endpoint mismatch.
 - fixture_ids: `CASE2-UP-STRICT-NEW-HIGH-INVALIDATE-001`,
   `CASE2-DOWN-STRICT-NEW-LOW-INVALIDATE-001`,
   `CASE2-UP-EQUAL-HIGH-STAYS-PENDING-001`,
@@ -239,13 +237,22 @@ theory. The accompanying reference oracle is stateless and non-production.
   evaluation are different-nature boundary elements and never merge. Later
   same-side elements may merge. A second feature sequence uses normal inclusion.
   For deterministic evidence representation, the pending endpoint is one
-  immutable object holding its ID, defining-stroke IDs, price, and bar. Primary
-  and secondary windows use immutable standard elements with sequence identity,
-  endpoint continuity, normalization, and complete provenance.
+  immutable `FeatureEndpointEvidence` holding its ID, defining-stroke IDs,
+  price, and bar. Every standard feature element carries direction, complete
+  start/end/high/low endpoint evidence, visibility time, sequence identity,
+  normalization, and provenance. Reuse of an endpoint ID requires the entire
+  endpoint evidence object to agree; high/low bars must lie within the element
+  and visibility must follow all endpoint evidence. Direction requires a strict
+  start-to-end price change, so a flat element cannot be labeled UP or DOWN.
+  Primary destruction returns stable
+  content-addressed evidence; pending context can only be constructed from that
+  evidence and cannot resubmit direction or endpoint baseline.
 - input: Included elements plus boundary-side and sequence-kind metadata, or a
   structurally bound three-element standard-feature window.
 - output: Merge permission or
-  `HYPOTHETICAL_BOUNDARY_DIFFERENT_NATURE`.
+  `HYPOTHETICAL_BOUNDARY_DIFFERENT_NATURE`; for primary classification, an
+  immutable `PrimaryDestructionEvidence` whose endpoint is the center TOP high
+  endpoint for UP or center BOTTOM low endpoint for DOWN.
 - fail_closed_condition: Cross-boundary first-case merge, suppressed
   second-sequence normalization, duplicate pending baselines, bare intervals,
   non-adjacent endpoints, cross-sequence elements, or incomplete provenance.
@@ -253,7 +260,11 @@ theory. The accompanying reference oracle is stateless and non-production.
   `INCLUSION-SECOND-SEQUENCE-MERGE-001`,
   `CASE2-SECOND-SEQUENCE-INCLUSION-001`,
   `PRIMARY-LEFT-CENTER-DISCONNECTED-REJECT-001`,
-  `PRIMARY-CENTER-RIGHT-DISCONNECTED-REJECT-001`
+  `PRIMARY-CENTER-RIGHT-DISCONNECTED-REJECT-001`,
+  `PRIMARY-ENDPOINT-PRICE-MISMATCH-REJECT-001`,
+  `PRIMARY-ENDPOINT-BAR-MISMATCH-REJECT-001`,
+  `PENDING-CONTEXT-ENDPOINT-DERIVED-001`,
+  `PRIMARY-EVIDENCE-KEY-DETERMINISTIC-001`
 
 ### EQ-FRACTAL-001
 
@@ -274,12 +285,22 @@ theory. The accompanying reference oracle is stateless and non-production.
 - classification: `ENGINEERING_DETERMINISM_V1`
 - statement: Confirmation time is the latest bar at which all source strokes of
   the required right standard element are first visible in the required status.
-  Endpoint time is never used to backfill confirmation.
-- input: Endpoint bar and all right-element source visibility bars.
-- output: Maximum visibility bar.
+  Endpoint time is never used to backfill confirmation. Secondary confirmation
+  and original-direction extreme evidence must bind the same primary evidence
+  key and pending endpoint ID. A single pure arbitration function selects the
+  earlier evidence; confirmation wins when both occur on the same bar.
+- input: Bound immutable secondary-confirmation and/or extreme evidence.
+- output: `SECOND_CASE_PENDING`, `SECOND_CASE_CONFIRMED`, or `INVALIDATED`.
 - fail_closed_condition: Missing visibility evidence, bool/float/negative bar
-  index, or result before endpoint.
-- fixture_ids: `TIMING-NO-BACKFILL-001`
+  index, result before endpoint, malformed evidence, or binding mismatch.
+- fixture_ids: `TIMING-NO-BACKFILL-001`,
+  `CASE2-ARBITRATION-CONFIRM-BEFORE-EXTREME-001`,
+  `CASE2-ARBITRATION-EXTREME-BEFORE-CONFIRM-001`,
+  `CASE2-ARBITRATION-SAME-BAR-CONFIRM-WINS-001`,
+  `CASE2-ARBITRATION-NONSTRICT-THEN-CONFIRM-001`,
+  `CASE2-ARBITRATION-EVIDENCE-KEY-MISMATCH-REJECT-001`,
+  `CASE2-ARBITRATION-ENDPOINT-MISMATCH-REJECT-001`,
+  `CASE2-ARBITRATION-ORDER-INDEPENDENT-001`
 
 ### EQ-WINNER-001
 
@@ -335,10 +356,13 @@ The reference oracle first normalizes immutable closed intervals, applies
 same-sequence inclusion only after a strict seed exists, and classifies only a
 strict three-element standard-feature window. Primary and secondary classifiers
 accept only adjacent, normalized elements from one declared sequence with
-complete, non-overlapping provenance. A direction-compatible primary fractal
+complete, non-overlapping provenance and fully equal shared endpoint evidence.
+Primary feature directions are opposite the candidate direction; secondary
+feature directions equal the original segment direction. A direction-compatible primary fractal
 without a first-to-center gap yields first-case evidence. With a gap it remains
 second-case pending until the required reverse-candidate feature fractal appears.
-A strict new original-direction extreme invalidates that pending boundary.
+The primary evidence key binds ordered element IDs, direction, sequence, case,
+fractal, and derived endpoint. It is the only source for the pending context.
 
 Pen break and canonical segment destruction remain distinct. Canonical
 destruction is evidence classification; `REPLACED` is a later engineering
@@ -349,10 +373,24 @@ pen-break oracle handles provisional one-pen evidence, so no meaningless
 
 All public bar indexes are exact, nonnegative integers: bool, float, and negative
 values fail closed. Pending price and bar exist only in the immutable
-`PendingEndpointEvidence`; strict-extreme evidence cannot resubmit or replace
+`FeatureEndpointEvidence`; strict-extreme evidence cannot resubmit or replace
 that baseline. Extreme observation must follow its pending endpoint, and
 confirmation cannot precede its endpoint. Equality at the pending price and
 movement in the wrong direction remain `SECOND_CASE_PENDING`.
+
+Secondary confirmation is immutable evidence bound to the primary evidence key,
+pending endpoint ID, secondary sequence, ordered element IDs, right-element
+visibility time, embedded immutable elements, and rule version. The arbiter
+revalidates those elements and derives confirmation time from the right
+element, rather than trusting a detached bar. Extreme evidence binds the same
+primary key and endpoint ID. `resolve_second_case_outcome` is the sole final arbitration
+path: earlier strict extreme invalidates, earlier confirmation confirms, a
+non-strict extreme cannot defeat confirmation, and same-bar confirmation wins.
+`resolve_second_case_evidence_sequence` normalizes immutable confirmation-first
+or extreme-first arrival tuples into that sole arbiter, proving arrival order
+cannot change the outcome. These evidence objects,
+content hashes, and the same-bar tie-break are
+`ENGINEERING_DETERMINISM_V1`, not claims about original textual formalization.
 
 A second sequence is not established by caller booleans. Its three immutable
 elements must share the pending sequence ID, be individually normalized, connect
@@ -372,8 +410,8 @@ The five JSON fixture files under `tests/fixtures/segment_rules/` form the
 versioned decision table. Every fixture records `rule_ids`, `classification`,
 `input`, `expected`, and `reason_code`. The original fixture set contained 36
 rows; review hardening expanded the executable table to 61 rows, including
-strict-extreme, lifecycle, primary structural, and second-sequence continuity
-gates.
+strict-extreme, lifecycle, primary structural, second-sequence continuity, and
+evidence-chain arbitration gates. The final executable table contains 80 rows.
 
 ## Explicit non-implementation gates
 
