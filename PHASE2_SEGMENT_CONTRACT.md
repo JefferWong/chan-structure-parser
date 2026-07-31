@@ -63,11 +63,17 @@ and an `earliest_confirmation_bar` at or after that evidence.
 Segment candidate identity is content-based and includes:
 
 - profile ID and version;
-- ordered stroke logical identities and content hashes;
-- ordered destruction-evidence identities and content hashes.
+- ordered candidate-window stable logical identities and content hashes;
+- runtime `object_id` values are never accepted as structural identity.
 
-Sequential numbering alone is forbidden because bounded tail recomputation can
-recreate different structures at the same position.
+Candidate identity must remain stable while the same object moves from candidate
+to provisional or confirmed eligibility. Destruction evidence therefore receives
+a separate content-based evidence key bound to the candidate key. Changing later
+evidence changes the evidence key, not the candidate identity.
+
+Sequential numbering and runtime `object_id` values are forbidden as structural
+identity because bounded tail recomputation can recreate different objects at the
+same position.
 
 ## Phase 2 contract gates
 
@@ -75,14 +81,14 @@ The contract PR passes only when:
 
 1. the Phase 1 baseline remains unchanged;
 2. no `segments` key appears in full or incremental parser output;
-3. unsupported profile values fail closed;
+3. unsupported or unknown profile values fail closed;
 4. fewer than three strokes are rejected;
 5. even-length candidate windows are rejected;
 6. non-alternating or disconnected strokes are rejected;
 7. only the tail may be provisional for candidate/provisional validation;
 8. confirmed eligibility requires all window strokes confirmed;
 9. confirmed eligibility requires explicit later confirmed destruction evidence;
-10. stable identity is deterministic and changes with evidence content;
+10. candidate identity is lifecycle-stable and confirmation evidence has a separate deterministic key;
 11. Python 3.10–3.12 hosted tests pass;
 12. no center, CZSC, Chan.py, signal, position, or execution code is introduced.
 

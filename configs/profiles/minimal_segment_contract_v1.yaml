@@ -1,7 +1,7 @@
 # Phase 2 contract-only profile.
 # This file does not enable segment construction in any parser engine.
 profile_id: minimal_segment_contract_v1
-profile_version: 0.1.0
+profile_version: 0.2.0
 status: CONTRACT_ONLY
 phase1_profile_id: minimal_strict_v1
 phase1_baseline_commit: de1b7f589ebe3c2a41fa6501d793200a7b595426
@@ -26,7 +26,8 @@ segment:
     allow_implicit_confirmation: false
 
   identity:
-    scheme: content_evidence_v1
+    candidate_scheme: content_window_v1
+    evidence_scheme: content_evidence_v1
 
 prohibited_in_this_profile:
   segment_engine_integration: true
