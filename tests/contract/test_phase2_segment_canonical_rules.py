@@ -724,17 +724,18 @@ def test_every_fixture_executes_against_reference_oracle(case):
                 interval(*data["primary_gap_first"]),
                 interval(*data["primary_gap_center"]),
             ) is not expected["original_gap_closed"]
+        canonical_context = secondary_context()
         result = classify_secondary_confirmation(
             *secondary_elements(
                 tuple(data["left"]),
                 tuple(data["center"]),
                 tuple(data["right"]),
             ),
-            context=secondary_context(),
+            context=canonical_context,
         )
         assert isinstance(result, SecondaryConfirmationEvidence)
         outcome = resolve_second_case_outcome(
-            secondary_context().pending,
+            canonical_context,
             secondary_confirmation=result,
             extreme_evidence=None,
         )
@@ -1067,23 +1068,24 @@ def test_every_fixture_executes_against_reference_oracle(case):
                 )
             return
         confirmation = confirmation_evidence(context, data["confirmation_bar"])
+        canonical_context = secondary_context(pending=context)
         extreme = extreme_evidence(
             context,
             data["extreme_price"],
             data["extreme_bar"],
         )
         first = resolve_second_case_outcome(
-            context,
+            canonical_context,
             secondary_confirmation=confirmation,
             extreme_evidence=extreme,
         )
         if fixture_id == "CASE2-ARBITRATION-ORDER-INDEPENDENT-001":
             confirmation_first = resolve_second_case_evidence_sequence(
-                context,
+                canonical_context,
                 (confirmation, extreme),
             )
             extreme_first = resolve_second_case_evidence_sequence(
-                context,
+                canonical_context,
                 (extreme, confirmation),
             )
             assert first == confirmation_first == extreme_first
@@ -2109,13 +2111,52 @@ def test_secondary_evidence_key_binds_legal_replaced_provenance():
 
 
 def test_original_secondary_evidence_still_arbitrates():
-    context = pending_context()
+    pending = pending_context()
+    context = secondary_context(pending=pending)
     result = resolve_second_case_outcome(
         context,
-        secondary_confirmation=confirmation_evidence(context),
+        secondary_confirmation=confirmation_evidence(pending),
         extreme_evidence=None,
     )
     assert result.destruction_case == DestructionCase.SECOND_CASE_CONFIRMED
+
+
+def test_secondary_evidence_must_match_canonical_context_provenance():
+    pending = pending_context()
+    canonical_context = secondary_context(pending=pending)
+    evidence = confirmation_evidence(pending)
+    assert evidence.primary_evidence_key == pending.primary_evidence.evidence_key
+    assert evidence.pending_endpoint_id == pending.pending_endpoint.endpoint_id
+    assert evidence.secondary_sequence_id == pending.secondary_sequence_id
+    assert (
+        evidence.normalized_source_logical_ids
+        == canonical_context.normalized_source_logical_ids
+    )
+    confirmed = resolve_second_case_outcome(
+        canonical_context,
+        secondary_confirmation=evidence,
+        extreme_evidence=None,
+    )
+    assert confirmed.destruction_case == DestructionCase.SECOND_CASE_CONFIRMED
+
+    mismatched_context = SecondarySequenceContext(
+        pending,
+        ("stroke:other-a", "stroke:other-b", "stroke:other-c"),
+    )
+    assert mismatched_context.pending is canonical_context.pending
+    assert (
+        mismatched_context.pending.secondary_sequence_id
+        == canonical_context.pending.secondary_sequence_id
+    )
+    with pytest.raises(
+        SegmentRuleContractError,
+        match="SECONDARY_NORMALIZED_PROVENANCE_MISMATCH",
+    ):
+        resolve_second_case_outcome(
+            mismatched_context,
+            secondary_confirmation=evidence,
+            extreme_evidence=None,
+        )
 
 
 @pytest.mark.parametrize(
@@ -2140,14 +2181,15 @@ def test_evidence_chain_public_entries_fail_closed(invalid):
 
 def test_arbitration_is_order_independent_and_same_bar_confirmation_wins():
     context = pending_context()
+    canonical_context = secondary_context(pending=context)
     confirmation = confirmation_evidence(context, 70)
     extreme = extreme_evidence(context, 11, 70)
     confirmation_first = resolve_second_case_evidence_sequence(
-        context,
+        canonical_context,
         (confirmation, extreme),
     )
     extreme_first = resolve_second_case_evidence_sequence(
-        context,
+        canonical_context,
         (extreme, confirmation),
     )
     assert confirmation_first == extreme_first

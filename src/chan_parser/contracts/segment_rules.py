@@ -1145,32 +1145,38 @@ def classify_pending_second_case_invalidation(
 
 
 def resolve_second_case_outcome(
-    context: PendingSecondCaseContext,
+    context: PendingSecondCaseContext | SecondarySequenceContext,
     *,
     secondary_confirmation: SecondaryConfirmationEvidence | None,
     extreme_evidence: OriginalDirectionExtremeEvidence | None,
 ) -> OracleDecision:
-    if not isinstance(context, PendingSecondCaseContext):
+    if isinstance(context, SecondarySequenceContext):
+        pending_context = context.pending
+    elif isinstance(context, PendingSecondCaseContext):
+        pending_context = context
+    else:
         raise SegmentRuleContractError("pending second-case context required")
-    primary_key = context.primary_evidence.evidence_key
-    endpoint = context.pending_endpoint
+    primary_key = pending_context.primary_evidence.evidence_key
+    endpoint = pending_context.pending_endpoint
     if secondary_confirmation is not None:
         if not isinstance(secondary_confirmation, SecondaryConfirmationEvidence):
             raise SegmentRuleContractError(
                 "secondary confirmation evidence required"
             )
+        if not isinstance(context, SecondarySequenceContext):
+            raise SegmentRuleContractError("secondary sequence context required")
         if secondary_confirmation.primary_evidence_key != primary_key:
             raise SegmentRuleContractError("SECONDARY_PRIMARY_EVIDENCE_KEY_MISMATCH")
         if secondary_confirmation.pending_endpoint_id != endpoint.endpoint_id:
             raise SegmentRuleContractError("SECONDARY_PENDING_ENDPOINT_MISMATCH")
         if (
             secondary_confirmation.secondary_sequence_id
-            != context.secondary_sequence_id
+            != pending_context.secondary_sequence_id
         ):
             raise SegmentRuleContractError("SECONDARY_SEQUENCE_ID_MISMATCH")
         required_secondary_fractal = (
             FeatureFractalType.BOTTOM
-            if context.original_direction == SegmentDirection.UP
+            if pending_context.original_direction == SegmentDirection.UP
             else FeatureFractalType.TOP
         )
         if (
@@ -1184,14 +1190,19 @@ def resolve_second_case_outcome(
             raise SegmentRuleContractError(
                 "secondary confirmation precedes pending endpoint"
             )
+        if (
+            secondary_confirmation.normalized_source_logical_ids
+            != context.normalized_source_logical_ids
+        ):
+            raise SegmentRuleContractError(
+                "SECONDARY_NORMALIZED_PROVENANCE_MISMATCH"
+            )
         _validate_standard_element_window(
             *secondary_confirmation.feature_elements,
-            sequence_id=context.secondary_sequence_id,
-            normalized_source_logical_ids=(
-                secondary_confirmation.normalized_source_logical_ids
-            ),
+            sequence_id=pending_context.secondary_sequence_id,
+            normalized_source_logical_ids=context.normalized_source_logical_ids,
             reason_prefix="SECOND_SEQUENCE",
-            required_direction=context.original_direction,
+            required_direction=pending_context.original_direction,
         )
         if secondary_confirmation.feature_elements[0].start_endpoint != endpoint:
             raise SegmentRuleContractError(
@@ -1221,7 +1232,7 @@ def resolve_second_case_outcome(
             )
         strict_extreme = (
             extreme_evidence.observed_extreme_price > endpoint.price
-            if context.original_direction == SegmentDirection.UP
+            if pending_context.original_direction == SegmentDirection.UP
             else extreme_evidence.observed_extreme_price < endpoint.price
         )
     if secondary_confirmation is not None and (
@@ -1250,13 +1261,15 @@ def resolve_second_case_outcome(
 
 
 def resolve_second_case_evidence_sequence(
-    context: PendingSecondCaseContext,
+    context: PendingSecondCaseContext | SecondarySequenceContext,
     evidence_sequence: Sequence[
         SecondaryConfirmationEvidence | OriginalDirectionExtremeEvidence
     ],
 ) -> OracleDecision:
     """Normalize evidence arrival order before the sole time arbiter runs."""
-    if not isinstance(context, PendingSecondCaseContext):
+    if not isinstance(
+        context, (PendingSecondCaseContext, SecondarySequenceContext)
+    ):
         raise SegmentRuleContractError("pending second-case context required")
     if type(evidence_sequence) is not tuple:
         raise SegmentRuleContractError("evidence sequence must be an immutable tuple")
