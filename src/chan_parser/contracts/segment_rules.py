@@ -48,6 +48,11 @@ class FeatureFractalType(str, Enum):
     NONE = "NONE"
 
 
+class FeatureIntervalSemantics(str, Enum):
+    NORMALIZED_FEATURE_RANGE = "NORMALIZED_FEATURE_RANGE"
+    STRUCTURAL_PRICE_RANGE = "STRUCTURAL_PRICE_RANGE"
+
+
 class DestructionCase(str, Enum):
     NONE = "NONE"
     FIRST_CASE = "FIRST_CASE"
@@ -242,6 +247,7 @@ class FeatureElementRuleInput:
     logical_id: str
     sequence_id: str
     direction: SegmentDirection
+    interval_semantics: FeatureIntervalSemantics
     start_endpoint: FeatureEndpointEvidence
     end_endpoint: FeatureEndpointEvidence
     high_endpoint: FeatureEndpointEvidence
@@ -256,6 +262,8 @@ class FeatureElementRuleInput:
             raise SegmentRuleContractError("feature element stable IDs required")
         if not isinstance(self.direction, SegmentDirection):
             raise SegmentRuleContractError("feature element direction required")
+        if not isinstance(self.interval_semantics, FeatureIntervalSemantics):
+            raise SegmentRuleContractError("feature interval semantics required")
         endpoints = (
             self.start_endpoint,
             self.end_endpoint,
@@ -284,6 +292,18 @@ class FeatureElementRuleInput:
             raise SegmentRuleContractError("feature high endpoint price mismatch")
         if self.low_endpoint.price != self.interval.low:
             raise SegmentRuleContractError("feature low endpoint price mismatch")
+        if self.interval_semantics == FeatureIntervalSemantics.STRUCTURAL_PRICE_RANGE:
+            if not (
+                self.interval.low
+                <= self.start_endpoint.price
+                <= self.interval.high
+                and self.interval.low
+                <= self.end_endpoint.price
+                <= self.interval.high
+            ):
+                raise SegmentRuleContractError(
+                    "structural endpoint price outside feature interval"
+                )
         if not (
             self.start_endpoint.bar_index
             <= self.high_endpoint.bar_index
@@ -468,6 +488,7 @@ class SecondaryConfirmationEvidence:
         FeatureElementRuleInput,
         FeatureElementRuleInput,
     ]
+    normalized_source_logical_ids: tuple[str, ...]
     feature_fractal_type: FeatureFractalType
     confirmed_at_bar: int
 
@@ -507,6 +528,16 @@ class SecondaryConfirmationEvidence:
             raise SegmentRuleContractError(
                 "secondary confirmation element identity mismatch"
             )
+        _validate_normalized_provenance(self.normalized_source_logical_ids)
+        embedded_provenance = tuple(
+            source
+            for item in self.feature_elements
+            for source in item.interval.source_stroke_logical_ids
+        )
+        if embedded_provenance != self.normalized_source_logical_ids:
+            raise SegmentRuleContractError(
+                "secondary confirmation normalized provenance mismatch"
+            )
         if self.confirmed_at_bar != self.feature_elements[2].visible_at_bar_index:
             raise SegmentRuleContractError(
                 "secondary confirmation time not derived from right element"
@@ -515,7 +546,8 @@ class SecondaryConfirmationEvidence:
             self.primary_evidence_key,
             self.pending_endpoint_id,
             self.secondary_sequence_id,
-            self.feature_element_logical_ids,
+            self.feature_elements,
+            self.normalized_source_logical_ids,
             self.feature_fractal_type,
             self.confirmed_at_bar,
         ):
@@ -665,6 +697,27 @@ def _endpoint_payload(
     }
 
 
+def _feature_element_payload(element: FeatureElementRuleInput) -> dict[str, object]:
+    """Return the deterministic, complete evidence payload for one element."""
+    return {
+        "logical_id": element.logical_id,
+        "sequence_id": element.sequence_id,
+        "direction": element.direction.value,
+        "interval_semantics": element.interval_semantics.value,
+        "start_endpoint": _endpoint_payload(element.start_endpoint),
+        "end_endpoint": _endpoint_payload(element.end_endpoint),
+        "high_endpoint": _endpoint_payload(element.high_endpoint),
+        "low_endpoint": _endpoint_payload(element.low_endpoint),
+        "interval": {
+            "low": element.interval.low,
+            "high": element.interval.high,
+            "source_stroke_logical_ids": element.interval.source_stroke_logical_ids,
+        },
+        "normalized": element.normalized,
+        "visible_at_bar_index": element.visible_at_bar_index,
+    }
+
+
 def _stable_evidence_key(kind: str, payload: Mapping[str, object]) -> str:
     canonical = json.dumps(
         {"kind": kind, **payload},
@@ -701,7 +754,12 @@ def _secondary_evidence_key(
     primary_evidence_key: str,
     pending_endpoint_id: str,
     sequence_id: str,
-    element_ids: tuple[str, str, str],
+    elements: tuple[
+        FeatureElementRuleInput,
+        FeatureElementRuleInput,
+        FeatureElementRuleInput,
+    ],
+    normalized_source_logical_ids: tuple[str, ...],
     fractal_type: FeatureFractalType,
     confirmed_at_bar: int,
 ) -> str:
@@ -711,7 +769,8 @@ def _secondary_evidence_key(
             "primary_evidence_key": primary_evidence_key,
             "pending_endpoint_id": pending_endpoint_id,
             "sequence_id": sequence_id,
-            "element_ids": element_ids,
+            "elements": tuple(_feature_element_payload(item) for item in elements),
+            "normalized_source_logical_ids": normalized_source_logical_ids,
             "fractal_type": fractal_type.value,
             "confirmed_at_bar": confirmed_at_bar,
             "rule_version": "minimal_segment_canonical_rules_v1",
@@ -728,6 +787,11 @@ def _validate_normalized_provenance(value: object) -> None:
         raise SegmentRuleContractError("normalized provenance tuple required")
     if len(value) != len(set(value)):
         raise SegmentRuleContractError("duplicate normalized provenance")
+
+
+def _require_price_intervals(*values: object) -> None:
+    if any(not isinstance(value, PriceInterval) for value in values):
+        raise SegmentRuleContractError("PriceInterval values required")
 
 
 def _validate_exact_mapping(
@@ -799,6 +863,7 @@ def build_feature_sequence(
 def classify_interval_relation(
     first: PriceInterval, second: PriceInterval
 ) -> IntervalRelation:
+    _require_price_intervals(first, second)
     if first.low == second.low and first.high == second.high:
         return IntervalRelation.EQUAL
     if first.low <= second.low and first.high >= second.high:
@@ -813,6 +878,7 @@ def classify_interval_relation(
 
 
 def has_feature_gap(first: PriceInterval, second: PriceInterval) -> bool:
+    _require_price_intervals(first, second)
     return (
         first.high < second.low
         or second.high < first.low
@@ -822,6 +888,7 @@ def has_feature_gap(first: PriceInterval, second: PriceInterval) -> bool:
 def derive_inclusion_seed(
     previous: PriceInterval, current: PriceInterval
 ) -> InclusionSeed:
+    _require_price_intervals(previous, current)
     relation = classify_interval_relation(previous, current)
     if relation in {
         IntervalRelation.CONTAINS,
@@ -845,6 +912,8 @@ def merge_included_intervals(
 ) -> PriceInterval:
     if not isinstance(first, PriceInterval) or not isinstance(second, PriceInterval):
         raise SegmentRuleContractError("PriceInterval values required")
+    if not isinstance(context, InclusionContext):
+        raise SegmentRuleContractError("InclusionContext required")
     if not isinstance(seed, InclusionSeed):
         raise SegmentRuleContractError("valid inclusion seed required")
     if (
@@ -886,6 +955,7 @@ def merge_included_intervals(
 def classify_strict_feature_fractal(
     left: PriceInterval, center: PriceInterval, right: PriceInterval
 ) -> FeatureFractalType:
+    _require_price_intervals(left, center, right)
     if (
         center.high > left.high
         and center.high > right.high
@@ -1044,7 +1114,8 @@ def classify_secondary_confirmation(
         context.pending.primary_evidence.evidence_key,
         context.pending.pending_endpoint.endpoint_id,
         context.pending.secondary_sequence_id,
-        element_ids,
+        (left, center, right),
+        context.normalized_source_logical_ids,
         fractal_type,
         confirmed_at_bar,
     )
@@ -1055,6 +1126,7 @@ def classify_secondary_confirmation(
         context.pending.secondary_sequence_id,
         element_ids,
         (left, center, right),
+        context.normalized_source_logical_ids,
         fractal_type,
         confirmed_at_bar,
     )
@@ -1115,10 +1187,8 @@ def resolve_second_case_outcome(
         _validate_standard_element_window(
             *secondary_confirmation.feature_elements,
             sequence_id=context.secondary_sequence_id,
-            normalized_source_logical_ids=tuple(
-                source
-                for item in secondary_confirmation.feature_elements
-                for source in item.interval.source_stroke_logical_ids
+            normalized_source_logical_ids=(
+                secondary_confirmation.normalized_source_logical_ids
             ),
             reason_prefix="SECOND_SEQUENCE",
             required_direction=context.original_direction,
@@ -1311,6 +1381,13 @@ def choose_deterministic_candidate(
 def confirmation_bar(
     endpoint_bar_index: int, right_element_visible_bars: Sequence[int]
 ) -> int:
+    if (
+        not isinstance(right_element_visible_bars, Sequence)
+        or isinstance(right_element_visible_bars, (str, bytes, bytearray))
+    ):
+        raise SegmentRuleContractError(
+            "right-element visibility must be a non-string Sequence"
+        )
     if type(endpoint_bar_index) is not int or any(
         type(item) is not int for item in right_element_visible_bars
     ):
@@ -1504,6 +1581,11 @@ def validate_frozen_prefix_transition(
         raise SegmentRuleContractError("LIFECYCLE_EVENT_DELETION_FORBIDDEN")
     if revised_confirmed_at_bar < original_confirmed_at_bar:
         raise SegmentRuleContractError("CONFIRMATION_TIME_BACKFILL_FORBIDDEN")
+    confirmation_time_changed = (
+        revised_confirmed_at_bar != original_confirmed_at_bar
+    )
+    if confirmation_time_changed and not correction_occurred:
+        raise SegmentRuleContractError("CORRECTION_FLAG_REQUIRED")
     if correction_occurred and after_event_count <= before_event_count:
         raise SegmentRuleContractError("CORRECTION_EVENT_APPEND_REQUIRED")
     return True

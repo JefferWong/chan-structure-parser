@@ -178,6 +178,18 @@ theory. The accompanying reference oracle is stateless and non-production.
 - fail_closed_condition: `low > high`.
 - fixture_ids: `GAP-TOUCHING-NOGAP-001`, `INCLUSION-EQUAL-001`
 
+Every `FeatureElementRuleInput` must explicitly declare one of two interval
+semantics; there is no implicit default. `NORMALIZED_FEATURE_RANGE` describes
+the price range after standard-feature inclusion normalization. Its structural
+start/end endpoints remain separate connection and direction evidence and may
+therefore lie outside that normalized interval. This is necessary because
+inclusion processing can narrow or otherwise transform a feature range while
+the structural endpoints still connect adjacent elements, including strict-gap
+second-case evidence. `STRUCTURAL_PRICE_RANGE` instead declares that the
+interval is the structural price range itself, so both structural start/end
+prices must lie in the closed interval. Under both semantics, high/low endpoint
+evidence must bind exactly to `interval.high`/`interval.low`.
+
 ### EQ-INCLUSION-001
 
 - rule_id: `EQ-INCLUSION-001`
@@ -343,7 +355,9 @@ theory. The accompanying reference oracle is stateless and non-production.
 - classification: `ENGINEERING_DETERMINISM_V1`
 - statement: Once complete evidence confirms a candidate, canonical segmentation
   before its endpoint freezes. Corrections require append-only lifecycle events;
-  old events cannot be deleted and confirmation cannot be backfilled.
+  old events cannot be deleted and confirmation cannot be backfilled. A changed
+  confirmation time is itself a correction and requires the correction flag;
+  every flagged correction must append an event even when time is unchanged.
 - input: Confirmed endpoint, lifecycle history, and later evidence.
 - output: Frozen-prefix constraint for a future implementation.
 - fail_closed_condition: Silent prefix rewrite, event deletion, or earlier
@@ -379,10 +393,15 @@ confirmation cannot precede its endpoint. Equality at the pending price and
 movement in the wrong direction remain `SECOND_CASE_PENDING`.
 
 Secondary confirmation is immutable evidence bound to the primary evidence key,
-pending endpoint ID, secondary sequence, ordered element IDs, right-element
-visibility time, embedded immutable elements, and rule version. The arbiter
-revalidates those elements and derives confirmation time from the right
-element, rather than trusting a detached bar. Extreme evidence binds the same
+pending endpoint ID, secondary sequence, right-element visibility time, the
+complete deterministic payload of all three embedded immutable elements,
+normalized provenance, fractal, and rule version. Each element payload includes
+its logical and sequence IDs, direction, explicit interval semantics, all four
+complete endpoint payloads, interval bounds and source IDs, normalization flag,
+and visibility bar. The arbiter revalidates those elements using the provenance
+already bound into the evidence and derives confirmation time from the right
+element, rather than trusting a detached bar or regenerating provenance from the
+elements being checked. Extreme evidence binds the same
 primary key and endpoint ID. `resolve_second_case_outcome` is the sole final arbitration
 path: earlier strict extreme invalidates, earlier confirmation confirms, a
 non-strict extreme cannot defeat confirmation, and same-bar confirmation wins.

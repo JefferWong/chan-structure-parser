@@ -16,6 +16,7 @@ from chan_parser.contracts.segment_rules import (
     FeatureElementRuleInput,
     FeatureEndpointEvidence,
     FeatureFractalType,
+    FeatureIntervalSemantics,
     InclusionContext,
     InclusionSeed,
     IntervalRelation,
@@ -241,6 +242,7 @@ def standard_elements(
             element_ids[index],
             sequence_ids[index],
             directions[index],
+            FeatureIntervalSemantics.NORMALIZED_FEATURE_RANGE,
             shared_endpoints[index],
             shared_endpoints[index + 1],
             high,
@@ -1657,6 +1659,32 @@ def test_frozen_prefix_correction_requires_appended_event():
         )
 
 
+def test_confirmation_time_change_requires_correction_flag():
+    with pytest.raises(SegmentRuleContractError, match="CORRECTION_FLAG_REQUIRED"):
+        validate_frozen_prefix_transition(
+            before_prefix_hash="abc",
+            after_prefix_hash="abc",
+            before_event_count=10,
+            after_event_count=10,
+            original_confirmed_at_bar=20,
+            revised_confirmed_at_bar=21,
+            correction_occurred=False,
+        )
+
+
+def test_unchanged_confirmation_with_correction_still_requires_append():
+    with pytest.raises(SegmentRuleContractError, match="APPEND_REQUIRED"):
+        validate_frozen_prefix_transition(
+            before_prefix_hash="abc",
+            after_prefix_hash="abc",
+            before_event_count=10,
+            after_event_count=10,
+            original_confirmed_at_bar=20,
+            revised_confirmed_at_bar=20,
+            correction_occurred=True,
+        )
+
+
 def test_segment_boundary_rejects_identical_endpoints():
     with pytest.raises(SegmentRuleContractError, match="ENDPOINT_INVALID"):
         SegmentBoundaryInput(
@@ -1749,6 +1777,74 @@ def test_confirmation_bar_rejects_invalid_index_types_and_ranges(
 ):
     with pytest.raises(SegmentRuleContractError):
         confirmation_bar(endpoint_bar, visible_bars)
+
+
+@pytest.mark.parametrize("invalid", [object(), None])
+def test_public_interval_apis_fail_closed_before_attribute_access(invalid):
+    valid = interval(1, 2, "stroke:valid")
+    calls = (
+        lambda: classify_interval_relation(invalid, valid),
+        lambda: has_feature_gap(valid, invalid),
+        lambda: derive_inclusion_seed(invalid, valid),
+        lambda: classify_strict_feature_fractal(valid, invalid, valid),
+    )
+    for call in calls:
+        with pytest.raises(SegmentRuleContractError):
+            call()
+
+
+@pytest.mark.parametrize("invalid", [object(), None])
+def test_merge_context_fails_closed_before_attribute_access(invalid):
+    with pytest.raises(SegmentRuleContractError):
+        merge_included_intervals(
+            interval(1, 4, "stroke:a"),
+            interval(2, 3, "stroke:b"),
+            InclusionSeed.UP,
+            context=invalid,
+        )
+
+
+@pytest.mark.parametrize("invalid", [object(), None, "12", b"12"])
+def test_confirmation_visibility_requires_non_string_sequence(invalid):
+    with pytest.raises(SegmentRuleContractError):
+        confirmation_bar(10, invalid)
+
+
+def test_normalized_feature_range_allows_structural_endpoints_outside_interval():
+    element = standard_elements((1, 2), (3, 7), (2, 5))[0]
+    assert element.interval_semantics == (
+        FeatureIntervalSemantics.NORMALIZED_FEATURE_RANGE
+    )
+    assert element.start_endpoint.price > element.interval.high
+    assert element.end_endpoint.price > element.interval.high
+
+
+def test_structural_price_range_rejects_endpoints_outside_interval():
+    element = standard_elements((1, 2), (3, 7), (2, 5))[0]
+    with pytest.raises(SegmentRuleContractError, match="outside feature interval"):
+        replace(
+            element,
+            interval_semantics=FeatureIntervalSemantics.STRUCTURAL_PRICE_RANGE,
+        )
+
+
+def test_structural_price_range_accepts_endpoints_inside_interval():
+    element = standard_elements((1, 2), (3, 7), (2, 5))[0]
+    structural = replace(
+        element,
+        interval_semantics=FeatureIntervalSemantics.STRUCTURAL_PRICE_RANGE,
+        interval=PriceInterval(30, 40, element.interval.source_stroke_logical_ids),
+        high_endpoint=replace(element.high_endpoint, price=40),
+        low_endpoint=replace(element.low_endpoint, price=30),
+    )
+    assert structural.start_endpoint.price == 40
+    assert structural.end_endpoint.price == 30
+
+
+def test_feature_interval_semantics_fails_closed_without_valid_enum():
+    element = standard_elements((1, 2), (3, 7), (2, 5))[0]
+    with pytest.raises(SegmentRuleContractError, match="semantics required"):
+        replace(element, interval_semantics="NORMALIZED_FEATURE_RANGE")
 
 
 def test_primary_fractal_and_pen_break_are_separate_apis():
@@ -1961,6 +2057,65 @@ def test_secondary_confirmation_binds_primary_endpoint_and_visibility_time():
     assert evidence.confirmed_at_bar == 73
     with pytest.raises(SegmentRuleContractError, match="key mismatch"):
         replace(evidence, evidence_key="forged")
+
+
+def test_secondary_evidence_key_binds_full_element_payload():
+    evidence = confirmation_evidence(pending_context())
+    left = evidence.feature_elements[0]
+    changed_interval = PriceInterval(
+        left.interval.low,
+        left.interval.high + 1,
+        left.interval.source_stroke_logical_ids,
+    )
+    changed_high = replace(left.high_endpoint, price=changed_interval.high)
+    changed_left = replace(
+        left,
+        interval=changed_interval,
+        high_endpoint=changed_high,
+    )
+    with pytest.raises(SegmentRuleContractError, match="key mismatch"):
+        replace(
+            evidence,
+            feature_elements=(changed_left,) + evidence.feature_elements[1:],
+        )
+
+
+def test_secondary_evidence_key_binds_legal_replaced_provenance():
+    evidence = confirmation_evidence(pending_context())
+    left = evidence.feature_elements[0]
+    changed_source = ("stroke:replacement",)
+    changed_left = replace(
+        left,
+        interval=replace(
+            left.interval,
+            source_stroke_logical_ids=changed_source,
+        ),
+        high_endpoint=replace(
+            left.high_endpoint,
+            defining_stroke_logical_ids=changed_source,
+        ),
+        low_endpoint=replace(
+            left.low_endpoint,
+            defining_stroke_logical_ids=changed_source,
+        ),
+    )
+    normalized_sources = changed_source + evidence.normalized_source_logical_ids[1:]
+    with pytest.raises(SegmentRuleContractError, match="key mismatch"):
+        replace(
+            evidence,
+            feature_elements=(changed_left,) + evidence.feature_elements[1:],
+            normalized_source_logical_ids=normalized_sources,
+        )
+
+
+def test_original_secondary_evidence_still_arbitrates():
+    context = pending_context()
+    result = resolve_second_case_outcome(
+        context,
+        secondary_confirmation=confirmation_evidence(context),
+        extreme_evidence=None,
+    )
+    assert result.destruction_case == DestructionCase.SECOND_CASE_CONFIRMED
 
 
 @pytest.mark.parametrize(
