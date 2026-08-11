@@ -1,0 +1,26 @@
+[
+  {
+    "fixture_id": "FS-UP-001",
+    "rule_ids": ["FS-001"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"candidate_direction": "UP", "stroke_directions": ["UP", "DOWN", "UP", "DOWN"]},
+    "expected": {"selected_directions": ["DOWN", "DOWN"]},
+    "reason_code": "OPPOSITE_DIRECTION_STROKES_SELECTED"
+  },
+  {
+    "fixture_id": "FS-DOWN-001",
+    "rule_ids": ["FS-001"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"candidate_direction": "DOWN", "stroke_directions": ["DOWN", "UP", "DOWN", "UP"]},
+    "expected": {"selected_directions": ["UP", "UP"]},
+    "reason_code": "OPPOSITE_DIRECTION_STROKES_SELECTED"
+  },
+  {
+    "fixture_id": "FS-CROSS-SEQUENCE-REJECT-001",
+    "rule_ids": ["FS-002"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"sequence_ids": ["candidate-a", "candidate-b"]},
+    "expected": {"accepted": false},
+    "reason_code": "FS_CROSS_SEQUENCE_REJECTED"
+  }
+]

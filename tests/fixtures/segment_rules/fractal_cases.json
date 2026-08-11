@@ -1,0 +1,48 @@
+[
+  {
+    "fixture_id": "FRACTAL-TOP-001",
+    "rule_ids": ["FR-001"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"left": [1, 4], "center": [3, 7], "right": [2, 5], "candidate_direction": "UP"},
+    "expected": {"fractal": "TOP"},
+    "reason_code": "STRICT_TOP"
+  },
+  {
+    "fixture_id": "FRACTAL-BOTTOM-001",
+    "rule_ids": ["FR-001"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"left": [3, 7], "center": [1, 4], "right": [2, 6], "candidate_direction": "DOWN"},
+    "expected": {"fractal": "BOTTOM"},
+    "reason_code": "STRICT_BOTTOM"
+  },
+  {
+    "fixture_id": "FRACTAL-EQUAL-HIGH-REJECT-001",
+    "rule_ids": ["EQ-FRACTAL-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"left": [1, 7], "center": [3, 7], "right": [2, 5]},
+    "expected": {"fractal": "NONE", "provisional": true},
+    "reason_code": "EQUAL_EXTREMA_UNRESOLVED"
+  },
+  {
+    "fixture_id": "FRACTAL-EQUAL-LOW-REJECT-001",
+    "rule_ids": ["EQ-FRACTAL-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"left": [1, 7], "center": [1, 4], "right": [2, 6]},
+    "expected": {"fractal": "NONE", "provisional": true},
+    "reason_code": "EQUAL_EXTREMA_UNRESOLVED"
+  },
+  {
+    "fixture_id": "FRACTAL-WRONG-DIRECTION-REJECT-001",
+    "rule_ids": ["FR-001"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {
+      "left": [3, 7],
+      "center": [1, 4],
+      "right": [2, 6],
+      "fractal": "BOTTOM",
+      "candidate_direction": "UP"
+    },
+    "expected": {"destruction_confirmed": false},
+    "reason_code": "FEATURE_FRACTAL_REQUIRED"
+  }
+]

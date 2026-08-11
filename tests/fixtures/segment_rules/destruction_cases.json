@@ -1,0 +1,426 @@
+[
+  {
+    "fixture_id": "GAP-STRICT-UP-001",
+    "rule_ids": ["EQ-INTERVAL-001", "EQ-GAP-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"a": [1, 2], "b": [3, 4]},
+    "expected": {"gap": true},
+    "reason_code": "STRICT_SEPARATION"
+  },
+  {
+    "fixture_id": "GAP-STRICT-DOWN-001",
+    "rule_ids": ["EQ-GAP-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"a": [4, 5], "b": [1, 3]},
+    "expected": {"gap": true},
+    "reason_code": "STRICT_SEPARATION"
+  },
+  {
+    "fixture_id": "GAP-TOUCHING-NOGAP-001",
+    "rule_ids": ["EQ-GAP-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"a": [1, 2], "b": [2, 4]},
+    "expected": {"gap": false, "relation": "TOUCHING"},
+    "reason_code": "COMMON_POINT_NO_GAP"
+  },
+  {
+    "fixture_id": "GAP-OVERLAP-NOGAP-001",
+    "rule_ids": ["EQ-GAP-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"a": [1, 3], "b": [2, 4]},
+    "expected": {"gap": false, "relation": "OVERLAP"},
+    "reason_code": "OVERLAP_NO_GAP"
+  },
+  {
+    "fixture_id": "CASE1-UP-001",
+    "rule_ids": ["DS-CASE1"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"direction": "UP", "left": [1, 4], "center": [3, 7], "right": [2, 5]},
+    "expected": {"case": "FIRST_CASE", "endpoint": 7},
+    "reason_code": "FIRST_CASE_NO_GAP_CONFIRMED"
+  },
+  {
+    "fixture_id": "CASE1-DOWN-001",
+    "rule_ids": ["DS-CASE1"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"direction": "DOWN", "left": [3, 7], "center": [1, 4], "right": [2, 6]},
+    "expected": {"case": "FIRST_CASE", "endpoint": 1},
+    "reason_code": "FIRST_CASE_NO_GAP_CONFIRMED"
+  },
+  {
+    "fixture_id": "CASE1-PEN-ONLY-PENDING-001",
+    "rule_ids": ["DS-PEN-001"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"pen_break": true, "complete_fractal": false},
+    "expected": {"case": "NONE", "provisional": true},
+    "reason_code": "PEN_BREAK_PROVISIONAL"
+  },
+  {
+    "fixture_id": "CASE1-FAILED-CONTINUATION-001",
+    "rule_ids": ["DS-CASE1-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"pen_break": true, "complete_fractal": false, "countermove_invalidated": true},
+    "expected": {"case": "INVALIDATED", "original_segment_continues": true},
+    "reason_code": "PEN_BREAK_EVIDENCE_INVALIDATED"
+  },
+  {
+    "fixture_id": "CASE2-UP-PENDING-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"direction": "UP", "left": [1, 2], "center": [3, 7], "right": [2, 5]},
+    "expected": {"case": "SECOND_CASE_PENDING"},
+    "reason_code": "SECOND_CASE_GAP_PENDING"
+  },
+  {
+    "fixture_id": "CASE2-DOWN-PENDING-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"direction": "DOWN", "left": [7, 8], "center": [2, 6], "right": [3, 7]},
+    "expected": {"case": "SECOND_CASE_PENDING"},
+    "reason_code": "SECOND_CASE_GAP_PENDING"
+  },
+  {
+    "fixture_id": "CASE2-SECOND-FRACTAL-CONFIRM-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "left": [3, 7], "center": [1, 4], "right": [2, 6], "second_sequence_fractal": "BOTTOM"},
+    "expected": {"case": "SECOND_CASE_CONFIRMED"},
+    "reason_code": "SECOND_SEQUENCE_FRACTAL_CONFIRMED"
+  },
+  {
+    "fixture_id": "CASE2-GAP-NOT-CLOSED-CONFIRM-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "primary_gap_first": [1, 2], "primary_gap_center": [3, 10], "left": [13, 17], "center": [11, 14], "right": [12, 16], "second_sequence_fractal": "BOTTOM"},
+    "expected": {"case": "SECOND_CASE_CONFIRMED", "original_gap_closed": false},
+    "reason_code": "SECOND_SEQUENCE_FRACTAL_CONFIRMED"
+  },
+  {
+    "fixture_id": "CASE2-UP-STRICT-NEW-HIGH-INVALIDATE-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 11, "pending_endpoint_bar_index": 10, "observed_at_bar_index": 20},
+    "expected": {"case": "INVALIDATED", "original_segment_continues": true},
+    "reason_code": "PENDING_DESTRUCTION_INVALIDATED"
+  },
+  {
+    "fixture_id": "CASE2-DOWN-STRICT-NEW-LOW-INVALIDATE-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "DOWN", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 9, "pending_endpoint_bar_index": 10, "observed_at_bar_index": 20},
+    "expected": {"case": "INVALIDATED"},
+    "reason_code": "PENDING_DESTRUCTION_INVALIDATED"
+  },
+  {
+    "fixture_id": "CASE2-UP-EQUAL-HIGH-STAYS-PENDING-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 10, "pending_endpoint_bar_index": 10, "observed_at_bar_index": 20},
+    "expected": {"case": "SECOND_CASE_PENDING"},
+    "reason_code": "ORIGINAL_DIRECTION_EXTREME_NOT_STRICT"
+  },
+  {
+    "fixture_id": "CASE2-DOWN-EQUAL-LOW-STAYS-PENDING-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "DOWN", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 10, "pending_endpoint_bar_index": 10, "observed_at_bar_index": 20},
+    "expected": {"case": "SECOND_CASE_PENDING"},
+    "reason_code": "ORIGINAL_DIRECTION_EXTREME_NOT_STRICT"
+  },
+  {
+    "fixture_id": "CASE2-WRONG-DIRECTION-STAYS-PENDING-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 9, "pending_endpoint_bar_index": 10, "observed_at_bar_index": 20},
+    "expected": {"case": "SECOND_CASE_PENDING"},
+    "reason_code": "ORIGINAL_DIRECTION_EXTREME_NOT_STRICT"
+  },
+  {
+    "fixture_id": "CASE2-EXTREME-BAR-ORDER-REJECT-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 11, "pending_endpoint_bar_index": 20, "observed_at_bar_index": 20},
+    "expected": {"accepted": false},
+    "reason_code": "extreme evidence must follow pending endpoint"
+  },
+  {
+    "fixture_id": "CASE2-NEGATIVE-BAR-REJECT-001",
+    "rule_ids": ["DS-CASE2-FAIL"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"original_direction": "UP", "pending_endpoint_id": "endpoint:pending", "pending_endpoint_source_logical_ids": ["stroke:pending"], "pending_endpoint_price": 10, "observed_extreme_price": 11, "pending_endpoint_bar_index": -1, "observed_at_bar_index": 20},
+    "expected": {"accepted": false},
+    "reason_code": "feature endpoint bar must be a nonnegative integer"
+  },
+  {
+    "fixture_id": "CASE2-SECOND-SEQUENCE-INCLUSION-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"sequence_boundary_nature": "SECOND_FEATURE_SEQUENCE", "a": [1, 5], "b": [2, 4], "seed": "UP"},
+    "expected": {"merged": [2, 5], "source_stroke_logical_ids": ["stroke:a", "stroke:b"]},
+    "reason_code": "SECOND_SEQUENCE_NORMAL_INCLUSION"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-UNRELATED-ENDPOINT-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "unrelated_left_start"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_ENDPOINT_NOT_ADJACENT"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-DISCONNECTED-LEFT-CENTER-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "disconnect_left_center"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_LEFT_CENTER_DISCONNECTED"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-DISCONNECTED-CENTER-RIGHT-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "disconnect_center_right"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_CENTER_RIGHT_DISCONNECTED"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-ID-MISMATCH-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "sequence_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_ID_MISMATCH"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-NONNORMALIZED-ELEMENT-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "nonnormalized_center"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_NORMALIZATION_REQUIRED"
+  },
+  {
+    "fixture_id": "SECOND-SEQUENCE-DUPLICATE-ELEMENT-ID-REJECT-001",
+    "rule_ids": ["DS-CASE2"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "duplicate_element_id"},
+    "expected": {"accepted": false},
+    "reason_code": "DUPLICATE_SECOND_SEQUENCE_ELEMENT_ID"
+  },
+  {
+    "fixture_id": "PRIMARY-SEQUENCE-ID-MISMATCH-REJECT-001",
+    "rule_ids": ["FS-002", "DS-CASE1"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "sequence_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_ID_MISMATCH"
+  },
+  {
+    "fixture_id": "PRIMARY-DUPLICATE-ELEMENT-ID-REJECT-001",
+    "rule_ids": ["FS-003", "DS-CASE1"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "duplicate_element_id"},
+    "expected": {"accepted": false},
+    "reason_code": "DUPLICATE_PRIMARY_ELEMENT_ID"
+  },
+  {
+    "fixture_id": "PRIMARY-NONNORMALIZED-ELEMENT-REJECT-001",
+    "rule_ids": ["FS-003", "DS-CASE1"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "nonnormalized_center"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_NORMALIZATION_REQUIRED"
+  },
+  {
+    "fixture_id": "PRIMARY-LEFT-CENTER-DISCONNECTED-REJECT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "disconnect_left_center"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_LEFT_CENTER_DISCONNECTED"
+  },
+  {
+    "fixture_id": "PRIMARY-CENTER-RIGHT-DISCONNECTED-REJECT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "disconnect_center_right"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_CENTER_RIGHT_DISCONNECTED"
+  },
+  {
+    "fixture_id": "PRIMARY-EMPTY-PROVENANCE-REJECT-001",
+    "rule_ids": ["FS-003"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "empty_provenance"},
+    "expected": {"accepted": false},
+    "reason_code": "feature element provenance required"
+  },
+  {
+    "fixture_id": "PRIMARY-DUPLICATE-PROVENANCE-REJECT-001",
+    "rule_ids": ["FS-003"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "duplicate_provenance"},
+    "expected": {"accepted": false},
+    "reason_code": "DUPLICATE_PRIMARY_PROVENANCE"
+  },
+  {
+    "fixture_id": "PRIMARY-PROVENANCE-MISMATCH-REJECT-001",
+    "rule_ids": ["FS-003"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "provenance_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_PROVENANCE_MISMATCH"
+  },
+  {
+    "fixture_id": "PRIMARY-WRONG-FEATURE-DIRECTION-REJECT-001",
+    "rule_ids": ["FS-001"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "wrong_feature_direction"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_DIRECTION_MISMATCH"
+  },
+  {
+    "fixture_id": "PRIMARY-ENDPOINT-PRICE-MISMATCH-REJECT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "endpoint_price_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_ENDPOINT_IDENTITY_MISMATCH"
+  },
+  {
+    "fixture_id": "PRIMARY-ENDPOINT-BAR-MISMATCH-REJECT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "endpoint_bar_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "PRIMARY_ENDPOINT_IDENTITY_MISMATCH"
+  },
+  {
+    "fixture_id": "PRIMARY-BAR-ORDER-REJECT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "bar_order"},
+    "expected": {"accepted": false},
+    "reason_code": "feature element bar order invalid"
+  },
+  {
+    "fixture_id": "SECONDARY-WRONG-FEATURE-DIRECTION-REJECT-001",
+    "rule_ids": ["FS-001"],
+    "classification": "ORIGINAL_CANONICAL_CORE",
+    "input": {"mutation": "wrong_feature_direction"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_DIRECTION_MISMATCH"
+  },
+  {
+    "fixture_id": "SECONDARY-ENDPOINT-EVIDENCE-MISMATCH-REJECT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "endpoint_evidence_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_SEQUENCE_ENDPOINT_IDENTITY_MISMATCH"
+  },
+  {
+    "fixture_id": "PENDING-CONTEXT-REQUIRES-PRIMARY-PENDING-EVIDENCE-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "wrong_type"},
+    "expected": {"accepted": false},
+    "reason_code": "primary destruction evidence required"
+  },
+  {
+    "fixture_id": "PENDING-CONTEXT-REJECTS-FIRST-CASE-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"primary_case": "FIRST_CASE"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_CASE_PENDING primary evidence required"
+  },
+  {
+    "fixture_id": "PENDING-CONTEXT-REJECTS-NONE-CASE-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"primary_case": "NONE"},
+    "expected": {"accepted": false},
+    "reason_code": "SECOND_CASE_PENDING primary evidence required"
+  },
+  {
+    "fixture_id": "PENDING-CONTEXT-ENDPOINT-DERIVED-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"primary_case": "SECOND_CASE_PENDING"},
+    "expected": {"endpoint_derived": true},
+    "reason_code": "PENDING_ENDPOINT_DERIVED"
+  },
+  {
+    "fixture_id": "PENDING-CONTEXT-CALLER-CANNOT-REPLACE-ENDPOINT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"forbidden_constructor_fields": ["pending_endpoint", "original_direction"]},
+    "expected": {"fields_absent": true},
+    "reason_code": "PENDING_CONTEXT_SINGLE_SOURCE"
+  },
+  {
+    "fixture_id": "PRIMARY-EVIDENCE-KEY-DETERMINISTIC-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"repeat_count": 2},
+    "expected": {"keys_equal": true},
+    "reason_code": "PRIMARY_EVIDENCE_KEY_STABLE"
+  },
+  {
+    "fixture_id": "CASE2-ARBITRATION-CONFIRM-BEFORE-EXTREME-001",
+    "rule_ids": ["EQ-TIME-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"confirmation_bar": 60, "extreme_bar": 70, "extreme_price": 11},
+    "expected": {"case": "SECOND_CASE_CONFIRMED"},
+    "reason_code": "SECOND_SEQUENCE_FRACTAL_CONFIRMED"
+  },
+  {
+    "fixture_id": "CASE2-ARBITRATION-EXTREME-BEFORE-CONFIRM-001",
+    "rule_ids": ["EQ-TIME-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"confirmation_bar": 70, "extreme_bar": 60, "extreme_price": 11},
+    "expected": {"case": "INVALIDATED"},
+    "reason_code": "PENDING_DESTRUCTION_INVALIDATED"
+  },
+  {
+    "fixture_id": "CASE2-ARBITRATION-SAME-BAR-CONFIRM-WINS-001",
+    "rule_ids": ["EQ-TIME-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"confirmation_bar": 60, "extreme_bar": 60, "extreme_price": 11},
+    "expected": {"case": "SECOND_CASE_CONFIRMED"},
+    "reason_code": "SECOND_SEQUENCE_FRACTAL_CONFIRMED"
+  },
+  {
+    "fixture_id": "CASE2-ARBITRATION-NONSTRICT-THEN-CONFIRM-001",
+    "rule_ids": ["EQ-TIME-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"confirmation_bar": 70, "extreme_bar": 60, "extreme_price": 10},
+    "expected": {"case": "SECOND_CASE_CONFIRMED"},
+    "reason_code": "SECOND_SEQUENCE_FRACTAL_CONFIRMED"
+  },
+  {
+    "fixture_id": "CASE2-ARBITRATION-EVIDENCE-KEY-MISMATCH-REJECT-001",
+    "rule_ids": ["EQ-TIME-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "evidence_key_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "EXTREME_PRIMARY_EVIDENCE_KEY_MISMATCH"
+  },
+  {
+    "fixture_id": "CASE2-ARBITRATION-ENDPOINT-MISMATCH-REJECT-001",
+    "rule_ids": ["EQ-TIME-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "endpoint_mismatch"},
+    "expected": {"accepted": false},
+    "reason_code": "EXTREME_PENDING_ENDPOINT_MISMATCH"
+  },
+  {
+    "fixture_id": "CASE2-ARBITRATION-ORDER-INDEPENDENT-001",
+    "rule_ids": ["EQ-TIME-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"confirmation_bar": 60, "extreme_bar": 70, "extreme_price": 11},
+    "expected": {"equal": true},
+    "reason_code": "ARBITRATION_ORDER_INDEPENDENT"
+  }
+]

@@ -1,0 +1,71 @@
+# Phase 2 canonical segment decisions.
+# Contract and reference-oracle use only; this profile cannot enable a parser.
+profile_id: minimal_segment_canonical_rules_v1
+profile_version: "1.0.0"
+status: CANONICAL_RULES_ONLY
+
+phase1_profile_id: minimal_strict_v1
+phase1_baseline_commit: de1b7f589ebe3c2a41fa6501d793200a7b595426
+
+segment_contract_profile_id: minimal_segment_contract_v1
+segment_contract_profile_version: "0.2.0"
+segment_contract_baseline_commit: f7eecdd657530f928ffbf869832e76f1dd17b92e
+
+implementation_enabled: false
+parser_integration_enabled: false
+
+rules:
+  feature_sequence:
+    source: opposite_direction_strokes
+    same_sequence_inclusion_only: true
+
+  interval:
+    model: closed
+    containment_includes_equality: true
+    touching_is_gap: false
+    gap_requires_strict_separation: true
+
+  inclusion:
+    seed_policy: latest_strict_non_inclusion_pair
+    unseeded_policy: defer
+    equal_boundary_seed: unresolved
+    merge_up: max_high_max_low
+    merge_down: min_high_min_low
+    first_case_cross_boundary_merge: forbidden
+    second_sequence_inclusion: required
+
+  fractal:
+    window_size: 3
+    comparison: strict_high_and_low
+    equal_extrema: unresolved
+    up_segment_required_type: TOP
+    down_segment_required_type: BOTTOM
+
+  destruction:
+    pen_break_confirms_segment_break: false
+    first_case_requires_no_gap: true
+    second_case_requires_gap: true
+    second_sequence_fractal_required: true
+    second_sequence_case_classification_required: false
+    original_gap_closure_required: false
+    original_direction_new_extreme_invalidates_pending: true
+
+  timing:
+    confirmation_uses_latest_visible_evidence_bar: true
+    endpoint_backfill_forbidden: true
+
+  arbitration:
+    policy: leftmost_confirmable_endpoint_v1
+
+  lifecycle_mapping:
+    unconfirmed_failed_candidate: INVALIDATED
+    confirmed_segment_superseded_by_reverse: REPLACED
+    destroyed_status_allowed: false
+
+prohibited:
+  segment_engine: true
+  parser_integration: true
+  center_or_zhongshu: true
+  czsc_or_chanpy: true
+  trading_signal: true
+  position_or_execution: true
