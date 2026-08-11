@@ -168,20 +168,20 @@
     "reason_code": "SECOND_SEQUENCE_ENDPOINT_NOT_ADJACENT"
   },
   {
-    "fixture_id": "SECOND-SEQUENCE-DISCONNECTED-LEFT-CENTER-REJECT-001",
-    "rule_ids": ["DS-CASE2"],
-    "classification": "ORIGINAL_CANONICAL_CORE",
-    "input": {"mutation": "disconnect_left_center"},
-    "expected": {"accepted": false},
-    "reason_code": "SECOND_SEQUENCE_LEFT_CENTER_DISCONNECTED"
+    "fixture_id": "SECOND-SEQUENCE-NONCONTIGUOUS-LEFT-CENTER-ACCEPT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "noncontiguous_left_center"},
+    "expected": {"accepted": true, "case": "SECOND_CASE_CONFIRMED"},
+    "reason_code": "NONCONTIGUOUS_STANDARD_FEATURE_ALLOWED"
   },
   {
-    "fixture_id": "SECOND-SEQUENCE-DISCONNECTED-CENTER-RIGHT-REJECT-001",
-    "rule_ids": ["DS-CASE2"],
-    "classification": "ORIGINAL_CANONICAL_CORE",
-    "input": {"mutation": "disconnect_center_right"},
-    "expected": {"accepted": false},
-    "reason_code": "SECOND_SEQUENCE_CENTER_RIGHT_DISCONNECTED"
+    "fixture_id": "SECOND-SEQUENCE-NONCONTIGUOUS-CENTER-RIGHT-ACCEPT-001",
+    "rule_ids": ["EQ-BOUNDARY-001"],
+    "classification": "ENGINEERING_DETERMINISM_V1",
+    "input": {"mutation": "noncontiguous_center_right"},
+    "expected": {"accepted": true, "case": "SECOND_CASE_CONFIRMED"},
+    "reason_code": "NONCONTIGUOUS_STANDARD_FEATURE_ALLOWED"
   },
   {
     "fixture_id": "SECOND-SEQUENCE-ID-MISMATCH-REJECT-001",
@@ -232,20 +232,20 @@
     "reason_code": "PRIMARY_NORMALIZATION_REQUIRED"
   },
   {
-    "fixture_id": "PRIMARY-LEFT-CENTER-DISCONNECTED-REJECT-001",
+    "fixture_id": "PRIMARY-NONCONTIGUOUS-LEFT-CENTER-ACCEPT-001",
     "rule_ids": ["EQ-BOUNDARY-001"],
     "classification": "ENGINEERING_DETERMINISM_V1",
-    "input": {"mutation": "disconnect_left_center"},
-    "expected": {"accepted": false},
-    "reason_code": "PRIMARY_LEFT_CENTER_DISCONNECTED"
+    "input": {"mutation": "noncontiguous_left_center"},
+    "expected": {"accepted": true, "case": "SECOND_CASE_PENDING"},
+    "reason_code": "NONCONTIGUOUS_STANDARD_FEATURE_ALLOWED"
   },
   {
-    "fixture_id": "PRIMARY-CENTER-RIGHT-DISCONNECTED-REJECT-001",
+    "fixture_id": "PRIMARY-NONCONTIGUOUS-CENTER-RIGHT-ACCEPT-001",
     "rule_ids": ["EQ-BOUNDARY-001"],
     "classification": "ENGINEERING_DETERMINISM_V1",
-    "input": {"mutation": "disconnect_center_right"},
-    "expected": {"accepted": false},
-    "reason_code": "PRIMARY_CENTER_RIGHT_DISCONNECTED"
+    "input": {"mutation": "noncontiguous_center_right"},
+    "expected": {"accepted": true, "case": "SECOND_CASE_PENDING"},
+    "reason_code": "NONCONTIGUOUS_STANDARD_FEATURE_ALLOWED"
   },
   {
     "fixture_id": "PRIMARY-EMPTY-PROVENANCE-REJECT-001",

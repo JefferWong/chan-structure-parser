@@ -5,12 +5,27 @@
 - Baseline commit: `f7eecdd657530f928ffbf869832e76f1dd17b92e`
 - Frozen Phase 1 profile: `minimal_strict_v1`
 - Frozen old contract profile: `minimal_segment_contract_v1@0.2.0`
-- New rules-only profile: `minimal_segment_canonical_rules_v1@1.0.0`
+- New rules-only profile: `minimal_segment_canonical_rules_v1@1.0.1`
 
 This document separates `ORIGINAL_CANONICAL_CORE` from
 `ENGINEERING_DETERMINISM_V1`. The second class makes underspecified boundaries
 deterministic for a future implementation; it is not represented as original
 theory. The accompanying reference oracle is stateless and non-production.
+
+## v1.0.1 production-binding correction
+
+Standard feature elements are consecutive by feature-sequence order; they are
+not required to share raw-stroke endpoint identity. Each element's start/end
+endpoint evidence describes that element's own source-span boundary. Adjacent
+standard feature elements must remain time-ordered and non-overlapping, while
+gaps between their spans are legal. The second feature sequence still begins at
+the immutable pending endpoint. Feature-element direction is semantic
+source-stroke direction and is not inferred from the aggregate start/end slope
+after inclusion normalization.
+
+This correction changes only the deterministic evidence representation needed
+to make a real `Stroke -> FeatureElementRuleInput` adapter possible. It does not
+enable `SegmentEngine` or parser integration.
 
 ## ORIGINAL_CANONICAL_CORE
 
@@ -76,7 +91,7 @@ theory. The accompanying reference oracle is stateless and non-production.
 - statement: A complete direction-compatible three-element fractal with no gap
   between its first and center elements is first-case destruction. The endpoint
   is the TOP center high for UP or BOTTOM center low for DOWN.
-- input: Three adjacent standard elements, candidate direction, and gap result.
+- input: Three consecutive standard elements, candidate direction, and gap result.
 - output: `FIRST_CASE` with endpoint.
 - fail_closed_condition: Incomplete three-element window, wrong fractal, gap, or
   pen break alone.
@@ -95,11 +110,13 @@ theory. The accompanying reference oracle is stateless and non-production.
 - output: `SECOND_CASE_PENDING` or `SECOND_CASE_CONFIRMED`.
 - fail_closed_condition: Missing primary fractal, missing required second
   fractal, unnormalized elements, duplicate element identity, sequence mismatch,
-  or disconnected endpoints. The three immutable second-sequence elements must
-  start at the pending endpoint, connect left-to-center-to-right, retain unique
-  provenance, and bind by shared endpoint identity. The original canonical core
-  requires the second sequence to start at the shared endpoint; endpoint IDs and
-  provenance containers are engineering evidence representations.
+  overlapping/reversed element time spans, or a second sequence whose first
+  element does not start at the pending endpoint. Internal second-sequence
+  elements are consecutive feature-sequence elements and need not share raw
+  stroke endpoint identity. The original canonical core requires the second
+  sequence to start at the shared pending endpoint; endpoint IDs, source-span
+  boundaries, and provenance containers are engineering evidence
+  representations.
 - fixture_ids: `CASE2-UP-PENDING-001`, `CASE2-DOWN-PENDING-001`,
   `CASE2-SECOND-FRACTAL-CONFIRM-001`,
   `CASE2-GAP-NOT-CLOSED-CONFIRM-001`,
@@ -250,13 +267,16 @@ evidence must bind exactly to `interval.high`/`interval.low`.
   same-side elements may merge. A second feature sequence uses normal inclusion.
   For deterministic evidence representation, the pending endpoint is one
   immutable `FeatureEndpointEvidence` holding its ID, defining-stroke IDs,
-  price, and bar. Every standard feature element carries direction, complete
-  start/end/high/low endpoint evidence, visibility time, sequence identity,
-  normalization, and provenance. Reuse of an endpoint ID requires the entire
-  endpoint evidence object to agree; high/low bars must lie within the element
-  and visibility must follow all endpoint evidence. Direction requires a strict
-  start-to-end price change, so a flat element cannot be labeled UP or DOWN.
-  Primary destruction returns stable
+  price, and bar. Every standard feature element carries semantic
+  source-stroke direction, complete start/end/high/low endpoint evidence,
+  visibility time, sequence identity, normalization, and provenance. Start/end
+  evidence describes that element's own source span; consecutive standard
+  feature elements are ordered by time and need not reuse endpoint identity.
+  Reuse of an endpoint ID requires the entire endpoint evidence object to agree;
+  high/low bars must lie within the element and visibility must follow all
+  endpoint evidence. Inclusion-normalized source-span endpoints do not infer
+  direction because one standard element may aggregate separated same-direction
+  feature strokes. Primary destruction returns stable
   content-addressed evidence; pending context can only be constructed from that
   evidence and cannot resubmit direction or endpoint baseline.
 - input: Included elements plus boundary-side and sequence-kind metadata, or a
@@ -267,12 +287,16 @@ evidence must bind exactly to `interval.high`/`interval.low`.
   endpoint for UP or center BOTTOM low endpoint for DOWN.
 - fail_closed_condition: Cross-boundary first-case merge, suppressed
   second-sequence normalization, duplicate pending baselines, bare intervals,
-  non-adjacent endpoints, cross-sequence elements, or incomplete provenance.
+  overlapping/reversed element time spans, cross-sequence elements, a
+  secondary left element detached from the pending endpoint, or incomplete
+  provenance.
 - fixture_ids: `INCLUSION-FIRST-BOUNDARY-NOMERGE-001`,
   `INCLUSION-SECOND-SEQUENCE-MERGE-001`,
   `CASE2-SECOND-SEQUENCE-INCLUSION-001`,
-  `PRIMARY-LEFT-CENTER-DISCONNECTED-REJECT-001`,
-  `PRIMARY-CENTER-RIGHT-DISCONNECTED-REJECT-001`,
+  `PRIMARY-NONCONTIGUOUS-LEFT-CENTER-ACCEPT-001`,
+  `PRIMARY-NONCONTIGUOUS-CENTER-RIGHT-ACCEPT-001`,
+  `SECOND-SEQUENCE-NONCONTIGUOUS-LEFT-CENTER-ACCEPT-001`,
+  `SECOND-SEQUENCE-NONCONTIGUOUS-CENTER-RIGHT-ACCEPT-001`,
   `PRIMARY-ENDPOINT-PRICE-MISMATCH-REJECT-001`,
   `PRIMARY-ENDPOINT-BAR-MISMATCH-REJECT-001`,
   `PENDING-CONTEXT-ENDPOINT-DERIVED-001`,
@@ -285,7 +309,7 @@ evidence must bind exactly to `interval.high`/`interval.low`.
 - statement: TOP requires center high and low both strictly above both
   neighbors; BOTTOM requires both strictly below. Any critical equality remains
   provisional as `EQUAL_EXTREMA_UNRESOLVED`.
-- input: Three adjacent standard intervals.
+- input: Three consecutive standard intervals.
 - output: `TOP`, `BOTTOM`, or `NONE`.
 - fail_closed_condition: Equality tie-break or non-three-element evidence.
 - fixture_ids: `FRACTAL-TOP-001`, `FRACTAL-BOTTOM-001`,
@@ -369,9 +393,11 @@ evidence must bind exactly to `interval.high`/`interval.low`.
 The reference oracle first normalizes immutable closed intervals, applies
 same-sequence inclusion only after a strict seed exists, and classifies only a
 strict three-element standard-feature window. Primary and secondary classifiers
-accept only adjacent, normalized elements from one declared sequence with
-complete, non-overlapping provenance and fully equal shared endpoint evidence.
-Primary feature directions are opposite the candidate direction; secondary
+accept only consecutive, normalized elements from one declared sequence with
+complete, non-overlapping provenance and time-ordered, non-overlapping source
+spans. Endpoint identity equality is required only when an endpoint ID is
+actually reused; internal consecutive feature elements need not share endpoint
+identity. Primary feature directions are opposite the candidate direction; secondary
 feature directions equal the original segment direction. A direction-compatible primary fractal
 without a first-to-center gap yields first-case evidence. With a gap it remains
 second-case pending until the required reverse-candidate feature fractal appears.
@@ -412,9 +438,11 @@ content hashes, and the same-bar tie-break are
 `ENGINEERING_DETERMINISM_V1`, not claims about original textual formalization.
 
 A second sequence is not established by caller booleans. Its three immutable
-elements must share the pending sequence ID, be individually normalized, connect
-by endpoint identity, begin at the pending endpoint, preserve unique provenance,
-and match the secondary context provenance. Endpoint defining-stroke IDs are
+elements must share the pending sequence ID, be individually normalized,
+remain time-ordered and non-overlapping, begin at the pending endpoint, preserve
+unique provenance, and match the secondary context provenance. Internal
+consecutive elements do not require shared endpoint identity. Endpoint
+defining-stroke IDs are
 engineering audit evidence and need not occur in the left element provenance;
 the original theory does not prescribe such a provenance coupling.
 
