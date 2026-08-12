@@ -89,16 +89,16 @@ REQUIRED_FIXTURE_IDS = {
     "LIFECYCLE-EVIDENCE-WITHOUT-CANDIDATE-REJECT-001",
     "LIFECYCLE-CONTRADICTORY-EVIDENCE-REJECT-001",
     "SECOND-SEQUENCE-UNRELATED-ENDPOINT-REJECT-001",
-    "SECOND-SEQUENCE-DISCONNECTED-LEFT-CENTER-REJECT-001",
-    "SECOND-SEQUENCE-DISCONNECTED-CENTER-RIGHT-REJECT-001",
+    "SECOND-SEQUENCE-NONCONTIGUOUS-LEFT-CENTER-ACCEPT-001",
+    "SECOND-SEQUENCE-NONCONTIGUOUS-CENTER-RIGHT-ACCEPT-001",
     "SECOND-SEQUENCE-ID-MISMATCH-REJECT-001",
     "SECOND-SEQUENCE-NONNORMALIZED-ELEMENT-REJECT-001",
     "SECOND-SEQUENCE-DUPLICATE-ELEMENT-ID-REJECT-001",
     "PRIMARY-SEQUENCE-ID-MISMATCH-REJECT-001",
     "PRIMARY-DUPLICATE-ELEMENT-ID-REJECT-001",
     "PRIMARY-NONNORMALIZED-ELEMENT-REJECT-001",
-    "PRIMARY-LEFT-CENTER-DISCONNECTED-REJECT-001",
-    "PRIMARY-CENTER-RIGHT-DISCONNECTED-REJECT-001",
+    "PRIMARY-NONCONTIGUOUS-LEFT-CENTER-ACCEPT-001",
+    "PRIMARY-NONCONTIGUOUS-CENTER-RIGHT-ACCEPT-001",
     "PRIMARY-EMPTY-PROVENANCE-REJECT-001",
     "PRIMARY-DUPLICATE-PROVENANCE-REJECT-001",
     "PRIMARY-PROVENANCE-MISMATCH-REJECT-001",
@@ -463,6 +463,7 @@ def test_profile_loads_and_is_rules_only():
     loaded = profile()
     validate_segment_canonical_rules_profile(loaded)
     assert loaded["status"] == "CANONICAL_RULES_ONLY"
+    assert loaded["profile_version"] == "1.0.1"
     assert loaded["implementation_enabled"] is False
     assert loaded["parser_integration_enabled"] is False
 
@@ -816,35 +817,29 @@ def test_every_fixture_executes_against_reference_oracle(case):
                     context=secondary_context(),
                 )
             return
-        elif mutation == "disconnect_left_center":
+        elif mutation in {
+            "noncontiguous_left_center",
+            "noncontiguous_center_right",
+        }:
             elements = list(secondary_elements())
-            elements[1] = replace(
-                elements[1],
+            target_index = 1 if mutation == "noncontiguous_left_center" else 2
+            elements[target_index] = replace(
+                elements[target_index],
                 start_endpoint=replace(
-                    elements[1].start_endpoint,
-                    endpoint_id="endpoint:gap",
+                    elements[target_index].start_endpoint,
+                    endpoint_id=f"endpoint:noncontiguous:{target_index}",
                 ),
             )
-            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
-                classify_secondary_confirmation(
-                    *elements,
-                    context=secondary_context(),
-                )
-            return
-        elif mutation == "disconnect_center_right":
-            elements = list(secondary_elements())
-            elements[2] = replace(
-                elements[2],
-                start_endpoint=replace(
-                    elements[2].start_endpoint,
-                    endpoint_id="endpoint:gap",
-                ),
+            context = secondary_context()
+            evidence = classify_secondary_confirmation(*elements, context=context)
+            assert isinstance(evidence, SecondaryConfirmationEvidence)
+            outcome = resolve_second_case_outcome(
+                context,
+                secondary_confirmation=evidence,
+                extreme_evidence=None,
             )
-            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
-                classify_secondary_confirmation(
-                    *elements,
-                    context=secondary_context(),
-                )
+            assert expected["accepted"] is True
+            assert outcome.destruction_case.value == expected["case"]
             return
         elif mutation == "sequence_mismatch":
             kwargs["sequence_ids"] = ("second:a", "second:b", "second:a")
@@ -879,35 +874,25 @@ def test_every_fixture_executes_against_reference_oracle(case):
             )
         elif mutation == "nonnormalized_center":
             element_kwargs["normalized"] = (True, False, True)
-        elif mutation == "disconnect_left_center":
+        elif mutation in {
+            "noncontiguous_left_center",
+            "noncontiguous_center_right",
+        }:
             elements = list(standard_elements((1, 2), (3, 7), (2, 5)))
-            elements[1] = replace(
-                elements[1],
+            target_index = 1 if mutation == "noncontiguous_left_center" else 2
+            elements[target_index] = replace(
+                elements[target_index],
                 start_endpoint=replace(
-                    elements[1].start_endpoint,
-                    endpoint_id="endpoint:gap",
+                    elements[target_index].start_endpoint,
+                    endpoint_id=f"endpoint:noncontiguous:{target_index}",
                 ),
             )
-            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
-                classify_primary_destruction_case(
-                    *elements,
-                    context=primary_context(SegmentDirection.UP),
-                )
-            return
-        elif mutation == "disconnect_center_right":
-            elements = list(standard_elements((1, 2), (3, 7), (2, 5)))
-            elements[2] = replace(
-                elements[2],
-                start_endpoint=replace(
-                    elements[2].start_endpoint,
-                    endpoint_id="endpoint:gap",
-                ),
+            result = classify_primary_destruction_case(
+                *elements,
+                context=primary_context(SegmentDirection.UP),
             )
-            with pytest.raises(SegmentRuleContractError, match=case["reason_code"]):
-                classify_primary_destruction_case(
-                    *elements,
-                    context=primary_context(SegmentDirection.UP),
-                )
+            assert expected["accepted"] is True
+            assert result.destruction_case.value == expected["case"]
             return
         elif mutation == "empty_provenance":
             element_kwargs["provenance"] = (
@@ -2210,14 +2195,58 @@ def test_feature_element_rejects_endpoint_identity_rebinding():
         )
 
 
-def test_feature_element_direction_requires_strict_price_change():
+def test_feature_element_direction_is_semantic_after_normalization():
     element = standard_elements((1, 2), (3, 7), (2, 5))[0]
     flat_price = element.start_endpoint.price
-    with pytest.raises(SegmentRuleContractError, match="direction mismatch"):
-        replace(
-            element,
-            end_endpoint=replace(
-                element.end_endpoint,
-                price=flat_price,
-            ),
+    normalized = replace(
+        element,
+        end_endpoint=replace(
+            element.end_endpoint,
+            price=flat_price,
+        ),
+    )
+    assert normalized.direction == SegmentDirection.DOWN
+
+
+def test_standard_feature_window_allows_time_gap_and_rejects_overlap():
+    gap = list(standard_elements((1, 2), (3, 7), (2, 5)))
+    gap_start_bar = gap[0].end_endpoint.bar_index + 2
+    gap[1] = replace(
+        gap[1],
+        start_endpoint=replace(
+            gap[1].start_endpoint,
+            endpoint_id="endpoint:gap-start",
+            bar_index=gap_start_bar,
+        ),
+        high_endpoint=replace(
+            gap[1].high_endpoint,
+            bar_index=gap_start_bar,
+        ),
+        low_endpoint=replace(
+            gap[1].low_endpoint,
+            bar_index=gap_start_bar,
+        ),
+    )
+    result = classify_primary_destruction_case(
+        *gap,
+        context=primary_context(SegmentDirection.UP),
+    )
+    assert result.destruction_case == DestructionCase.SECOND_CASE_PENDING
+
+    overlap = list(standard_elements((1, 2), (3, 7), (2, 5)))
+    overlap[1] = replace(
+        overlap[1],
+        start_endpoint=replace(
+            overlap[1].start_endpoint,
+            endpoint_id="endpoint:overlap",
+            bar_index=overlap[0].end_endpoint.bar_index - 1,
+        ),
+    )
+    with pytest.raises(
+        SegmentRuleContractError,
+        match="PRIMARY_LEFT_CENTER_TIME_OVERLAP",
+    ):
+        classify_primary_destruction_case(
+            *overlap,
+            context=primary_context(SegmentDirection.UP),
         )

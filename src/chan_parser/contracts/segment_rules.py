@@ -321,14 +321,9 @@ class FeatureElementRuleInput:
             raise SegmentRuleContractError("feature high endpoint provenance mismatch")
         if not set(self.low_endpoint.defining_stroke_logical_ids).issubset(provenance):
             raise SegmentRuleContractError("feature low endpoint provenance mismatch")
-        if (
-            self.direction == SegmentDirection.UP
-            and self.start_endpoint.price >= self.end_endpoint.price
-        ) or (
-            self.direction == SegmentDirection.DOWN
-            and self.start_endpoint.price <= self.end_endpoint.price
-        ):
-            raise SegmentRuleContractError("feature endpoint direction mismatch")
+        # Direction is semantic source-feature direction. Inclusion-normalized
+        # elements may aggregate separated same-direction feature strokes, so the
+        # aggregate source-span endpoint slope is not a direction oracle.
         if type(self.normalized) is not bool:
             raise SegmentRuleContractError("feature normalized flag must be bool")
         if (
@@ -594,7 +589,7 @@ def _expected_profile() -> dict[str, Any]:
     """Return a fresh profile oracle so callers cannot mutate contract state."""
     return {
     "profile_id": "minimal_segment_canonical_rules_v1",
-    "profile_version": "1.0.0",
+    "profile_version": "1.0.1",
     "status": "CANONICAL_RULES_ONLY",
     "phase1_profile_id": "minimal_strict_v1",
     "phase1_baseline_commit": "de1b7f589ebe3c2a41fa6501d793200a7b595426",
@@ -745,7 +740,7 @@ def _primary_evidence_key(
             "element_ids": element_ids,
             "fractal_type": fractal_type.value,
             "endpoint": _endpoint_payload(endpoint),
-            "rule_version": "minimal_segment_canonical_rules_v1",
+            "rule_version": "minimal_segment_canonical_rules_v1@1.0.1",
         },
     )
 
@@ -773,7 +768,7 @@ def _secondary_evidence_key(
             "normalized_source_logical_ids": normalized_source_logical_ids,
             "fractal_type": fractal_type.value,
             "confirmed_at_bar": confirmed_at_bar,
-            "rule_version": "minimal_segment_canonical_rules_v1",
+            "rule_version": "minimal_segment_canonical_rules_v1@1.0.1",
         },
     )
 
@@ -1333,10 +1328,14 @@ def _validate_standard_element_window(
                     f"{reason_prefix}_ENDPOINT_IDENTITY_MISMATCH"
                 )
             endpoint_registry[evidence.endpoint_id] = evidence
-    if left.end_endpoint != center.start_endpoint:
-        raise SegmentRuleContractError(f"{reason_prefix}_LEFT_CENTER_DISCONNECTED")
-    if center.end_endpoint != right.start_endpoint:
-        raise SegmentRuleContractError(f"{reason_prefix}_CENTER_RIGHT_DISCONNECTED")
+    if left.end_endpoint.bar_index > center.start_endpoint.bar_index:
+        raise SegmentRuleContractError(
+            f"{reason_prefix}_LEFT_CENTER_TIME_OVERLAP"
+        )
+    if center.end_endpoint.bar_index > right.start_endpoint.bar_index:
+        raise SegmentRuleContractError(
+            f"{reason_prefix}_CENTER_RIGHT_TIME_OVERLAP"
+        )
     intervals = tuple(item.interval for item in elements)
     if any(not item.source_stroke_logical_ids for item in intervals):
         raise SegmentRuleContractError(f"{reason_prefix}_PROVENANCE_REQUIRED")
