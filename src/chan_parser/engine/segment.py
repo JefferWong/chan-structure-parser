@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-from typing import Any, Mapping, Sequence
+from itertools import pairwise
+from typing import Any, ClassVar, Mapping, Sequence
 
 from ..contracts.segment_rules import (
     DestructionCase,
@@ -65,7 +66,7 @@ class SegmentEngine:
     CANONICAL_PROFILE_VERSION = "1.0.1"
     CANONICAL_BASELINE = "b2c88f38039cfe0ca0f3682e762bc6df3431de1d"
 
-    _EXPECTED_PROFILE: dict[str, Any] = {
+    _EXPECTED_PROFILE: ClassVar[dict[str, Any]] = {
         "profile_id": PROFILE_ID,
         "profile_version": PROFILE_VERSION,
         "status": "ENGINE_CORE_ONLY",
@@ -310,7 +311,7 @@ class SegmentEngine:
         if len(stroke_ids) != len(set(stroke_ids)):
             raise SegmentEngineCoreError("SEGMENT_SOURCE_DUPLICATE_STROKE_ID")
 
-        for previous, current in zip(values, values[1:]):
+        for previous, current in pairwise(values):
             if previous.direction == current.direction:
                 raise SegmentEngineCoreError(
                     "SEGMENT_SOURCE_DIRECTION_NOT_ALTERNATING"
@@ -335,7 +336,6 @@ class SegmentEngine:
         sequence_id: str,
     ) -> FeatureElementRuleInput:
         logical_id = stroke.logical_id
-        assert logical_id is not None
         start = FeatureEndpointEvidence(
             stroke.start_fractal_id,
             (logical_id,),
@@ -541,7 +541,10 @@ class SegmentEngine:
 
         confirmed_at = confirmation_bar(
             endpoint.bar_index,
-            (window[2].visible_at_bar_index,),
+            tuple(
+                element.visible_at_bar_index
+                for element in window
+            ),
         )
         by_logical_id = {stroke.logical_id: stroke for stroke in source}
         feature_logical_ids = tuple(

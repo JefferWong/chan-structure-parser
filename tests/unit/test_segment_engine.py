@@ -163,6 +163,18 @@ def test_up_first_case_materializes_confirmed_segment():
     assert segment.created_at_bar == 6
 
 
+def test_first_case_confirmation_waits_for_all_feature_elements():
+    result = engine().process_primary(
+        make_strokes(
+            [0, 10, 4, 12, 6, 11, 5],
+            visibility_overrides={3: 9},
+        ),
+        sequence_id="primary:up-early-feature-late-visibility",
+    )
+    assert result.segment is not None
+    assert result.segment.confirmed_at_bar == 9
+
+
 def test_down_first_case_materializes_confirmed_segment():
     result = engine().process_primary(
         make_strokes([12, 2, 8, 0, 6, 1, 7]),
