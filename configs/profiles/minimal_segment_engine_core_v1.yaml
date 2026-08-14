@@ -1,0 +1,30 @@
+# Phase 2 SegmentEngine R1 implementation profile.
+# Enables only the pure primary feature-sequence core; parser integration remains forbidden.
+profile_id: minimal_segment_engine_core_v1
+profile_version: "0.1.0"
+status: ENGINE_CORE_ONLY
+
+canonical_rules_profile_id: minimal_segment_canonical_rules_v1
+canonical_rules_profile_version: "1.0.1"
+canonical_rules_baseline_commit: b2c88f38039cfe0ca0f3682e762bc6df3431de1d
+
+implementation:
+  primary_feature_adapter_enabled: true
+  first_case_materialization_enabled: true
+  second_case_orchestration_enabled: false
+  lifecycle_events_enabled: false
+  parser_integration_enabled: false
+  checkpoint_integration_enabled: false
+  full_incremental_integration_enabled: false
+
+evidence_binding:
+  source_stroke_status: CONFIRMED
+  unseeded_inclusion_policy: fail_closed
+  equal_extremum_endpoint_policy: earliest_bar_then_endpoint_id
+
+prohibited:
+  parser_integration: true
+  center_or_zhongshu: true
+  czsc_or_chanpy: true
+  trading_signal: true
+  position_or_execution: true
