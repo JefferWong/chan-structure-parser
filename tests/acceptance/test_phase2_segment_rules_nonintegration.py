@@ -26,6 +26,10 @@ ALLOWED_LIFECYCLE_ORACLE_TYPES = {
     "PrimaryDestructionEvidence",
     "SegmentDirection",
 }
+CANONICAL_SEGMENT_RULES_MODULES = {
+    "chan_parser.contracts.segment_rules",
+    "..contracts.segment_rules",
+}
 FORBIDDEN_LIFECYCLE_ORACLE_CALLS = {
     "build_feature_sequence",
     "build_pending_second_case_context",
@@ -64,7 +68,18 @@ def _is_direct_segment_rules_import(node: ast.AST) -> bool:
     return (
         isinstance(node, ast.ImportFrom)
         and bool(node.module)
+        and f'{"." * node.level}{node.module}'
+        in CANONICAL_SEGMENT_RULES_MODULES
+    )
+
+
+def _is_noncanonical_segment_rules_import(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.ImportFrom)
+        and bool(node.module)
         and node.module.split(".")[-1] == "segment_rules"
+        and f'{"." * node.level}{node.module}'
+        not in CANONICAL_SEGMENT_RULES_MODULES
     )
 
 
@@ -99,6 +114,11 @@ def _lifecycle_oracle_import_violations(tree: ast.AST) -> list[str]:
         for _ in _segment_rules_module_object_imports(tree)
     ]
     direct_imports = _direct_segment_rules_imports(tree)
+    violations.extend(
+        "SEGMENT_RULES_NONCANONICAL_MODULE_PATH"
+        for node in ast.walk(tree)
+        if _is_noncanonical_segment_rules_import(node)
+    )
     imported_names = {
         alias.name
         for node in direct_imports
@@ -318,6 +338,30 @@ def test_lifecycle_oracle_direct_import_paths_share_exact_type_whitelist():
     )
     assert _lifecycle_oracle_import_violations(absolute) == []
     assert _lifecycle_oracle_import_violations(relative) == []
+
+
+def test_lifecycle_oracle_canonical_path_gate_rejects_foreign_suffix_matches():
+    allowed_names = (
+        "DestructionCase, PrimaryDestructionEvidence, SegmentDirection"
+    )
+    sources = (
+        "from foreign.segment_rules import " + allowed_names,
+        "from ..foreign.segment_rules import " + allowed_names,
+    )
+    for source in sources:
+        tree = ast.parse(source)
+        suffix_only_imports = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.split(".")[-1] == "segment_rules"
+        ]
+        assert suffix_only_imports
+        assert _direct_segment_rules_imports(tree) == []
+        assert "SEGMENT_RULES_NONCANONICAL_MODULE_PATH" in (
+            _lifecycle_oracle_import_violations(tree)
+        )
 
 
 def test_lifecycle_oracle_gate_rejects_extra_function_and_wildcard_imports():

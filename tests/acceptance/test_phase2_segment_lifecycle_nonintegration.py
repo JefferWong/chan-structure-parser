@@ -21,17 +21,23 @@ ENGINE_INIT = ROOT / "src/chan_parser/engine/__init__.py"
 ENGINE_PROFILE = ROOT / "configs/profiles/minimal_segment_engine_core_v1.yaml"
 
 
-def imports(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    result = set()
+def _imported_module_paths(tree: ast.AST) -> set[str]:
+    result: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             result.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             module = f'{"." * node.level}{node.module or ""}'
             result.add(module)
-            result.update(alias.name for alias in node.names)
+            result.update(
+                f"{module}.{alias.name}" if module else alias.name
+                for alias in node.names
+            )
     return result
+
+
+def imports(path: Path) -> set[str]:
+    return _imported_module_paths(ast.parse(path.read_text(encoding="utf-8")))
 
 
 def bars() -> list[RawBar]:
@@ -59,8 +65,48 @@ def test_lifecycle_contract_has_no_runtime_imports():
     imported = imports(CONTRACT)
     assert not forbidden.intersection(imported)
     text = CONTRACT.read_text(encoding="utf-8")
+    module_paths = _imported_module_paths(
+        ast.parse(text, filename=str(CONTRACT))
+    )
+    assert not any(
+        "engine" in path.split(".")
+        or "checkpoint" in path.split(".")
+        or path.split(".")[-2:] == ["audit", "event_log"]
+        for path in module_paths
+    )
     assert "chan_parser.engine" not in text
     assert "audit.event_log" not in text
+
+
+def test_lifecycle_runtime_module_path_gate_rejects_imported_module_objects():
+    forbidden_sources = (
+        "import chan_parser.checkpoint as cp",
+        "from chan_parser.checkpoint import restore",
+        "from ..engine.segment import SegmentEngine",
+        "from chan_parser.engine import segment",
+        "from ..audit.event_log import EventLog",
+    )
+    for source in forbidden_sources:
+        tree = ast.parse(source)
+        paths = _imported_module_paths(tree)
+        assert not paths.isdisjoint({"chan_parser.checkpoint"}) or any(
+            "engine" in path.split(".")
+            or "checkpoint" in path.split(".")
+            or path.split(".")[-2:] == ["audit", "event_log"]
+            for path in paths
+        )
+
+
+def test_checkpoint_old_symbol_gate_missed_module_import_and_new_gate_blocks_it():
+    tree = ast.parse("import chan_parser.checkpoint as cp")
+    imported_symbols = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    assert not {"SegmentEngine", "FullRebuildEngine", "IncrementalEngine", "EventLog", "Checkpoint"}.intersection(imported_symbols)
+    assert "chan_parser.checkpoint" in _imported_module_paths(tree)
 
 
 def test_contract_does_not_construct_lifecycle_events():
