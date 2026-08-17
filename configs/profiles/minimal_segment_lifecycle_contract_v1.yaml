@@ -1,0 +1,41 @@
+# Phase 2 Segment lifecycle intent contract.
+# This profile defines deterministic intent semantics only; it emits no events.
+profile_id: minimal_segment_lifecycle_contract_v1
+profile_version: "0.1.0"
+status: CONTRACT_ONLY
+
+source_segment_profile_id: minimal_segment_engine_core_v1
+source_segment_profile_version: "0.1.0"
+source_segment_baseline_commit: c1d08aa86661838bb21561871e7f3af7ad4de235
+
+transition:
+  source_status: ABSENT
+  target_status: CONFIRMED
+  provisional_allowed: false
+  implicit_confirmation_allowed: false
+  caller_confirmation_timestamp_allowed: false
+  future_visible_confirmation_allowed: false
+
+direct_confirmed_intents:
+  event_types:
+    - OBJECT_CREATED
+    - OBJECT_CONFIRMED
+  occurred_at_bar_source: segment.confirmed_at_bar
+  same_bar_required: true
+  object_type: segment
+  created_reason_code: SEGMENT_FIRST_CASE_CREATED
+  confirmed_reason_code: SEGMENT_FIRST_CASE_CONFIRMED
+
+zero_intent_outcomes:
+  - SEGMENT_FEATURE_WINDOW_INCOMPLETE
+  - SEGMENT_PRIMARY_FRACTAL_NOT_FOUND
+  - SEGMENT_SECOND_CASE_PENDING
+
+integration:
+  event_emission_enabled: false
+  parser_integration_enabled: false
+  checkpoint_integration_enabled: false
+  bounded_tail_integration_enabled: false
+  full_incremental_integration_enabled: false
+  second_case_confirmation_enabled: false
+  center_or_zhongshu_enabled: false

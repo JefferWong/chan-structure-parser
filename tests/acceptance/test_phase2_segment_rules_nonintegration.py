@@ -18,6 +18,127 @@ RULE_PROFILE = ROOT / "configs/profiles/minimal_segment_canonical_rules_v1.yaml"
 ENGINE_PROFILE = ROOT / "configs/profiles/minimal_segment_engine_core_v1.yaml"
 ORACLE = ROOT / "src/chan_parser/contracts/segment_rules.py"
 SEGMENT_ENGINE = ROOT / "src/chan_parser/engine/segment.py"
+SEGMENT_LIFECYCLE = (
+    ROOT / "src/chan_parser/contracts/segment_lifecycle.py"
+)
+ALLOWED_LIFECYCLE_ORACLE_TYPES = {
+    "DestructionCase",
+    "PrimaryDestructionEvidence",
+    "SegmentDirection",
+}
+CANONICAL_SEGMENT_RULES_MODULES = {
+    "chan_parser.contracts.segment_rules",
+    "..contracts.segment_rules",
+}
+FORBIDDEN_LIFECYCLE_ORACLE_CALLS = {
+    "build_feature_sequence",
+    "build_pending_second_case_context",
+    "classify_interval_relation",
+    "classify_primary_destruction_case",
+    "classify_secondary_confirmation",
+    "choose_deterministic_candidate",
+    "confirmation_bar",
+    "derive_inclusion_seed",
+    "merge_included_intervals",
+    "resolve_lifecycle",
+    "resolve_second_case_evidence_sequence",
+    "resolve_second_case_outcome",
+    "validate_frozen_prefix_transition",
+    "validate_segment_boundaries",
+}
+
+
+def _segment_rules_module_object_imports(tree: ast.AST) -> list[ast.AST]:
+    violations = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            alias.name == "segment_rules"
+            or alias.name.endswith(".segment_rules")
+            for alias in node.names
+        ):
+            violations.append(node)
+        elif isinstance(node, ast.ImportFrom) and any(
+            alias.name == "segment_rules" for alias in node.names
+        ):
+            violations.append(node)
+    return violations
+
+
+def _is_direct_segment_rules_import(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.ImportFrom)
+        and bool(node.module)
+        and f'{"." * node.level}{node.module}'
+        in CANONICAL_SEGMENT_RULES_MODULES
+    )
+
+
+def _is_noncanonical_segment_rules_import(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.ImportFrom)
+        and bool(node.module)
+        and node.module.split(".")[-1] == "segment_rules"
+        and f'{"." * node.level}{node.module}'
+        not in CANONICAL_SEGMENT_RULES_MODULES
+    )
+
+
+def _direct_segment_rules_imports(tree: ast.AST) -> list[ast.ImportFrom]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if _is_direct_segment_rules_import(node)
+    ]
+
+
+def _call_terminal_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _lifecycle_oracle_authority_calls(tree: ast.AST) -> list[ast.Call]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _call_terminal_name(node) in FORBIDDEN_LIFECYCLE_ORACLE_CALLS
+    ]
+
+
+def _lifecycle_oracle_import_violations(tree: ast.AST) -> list[str]:
+    violations = [
+        "SEGMENT_RULES_MODULE_OBJECT_IMPORT"
+        for _ in _segment_rules_module_object_imports(tree)
+    ]
+    direct_imports = _direct_segment_rules_imports(tree)
+    violations.extend(
+        "SEGMENT_RULES_NONCANONICAL_MODULE_PATH"
+        for node in ast.walk(tree)
+        if _is_noncanonical_segment_rules_import(node)
+    )
+    imported_names = {
+        alias.name
+        for node in direct_imports
+        for alias in node.names
+    }
+    for node in direct_imports:
+        if any(
+            alias.name == "*"
+            or alias.name not in ALLOWED_LIFECYCLE_ORACLE_TYPES
+            or alias.asname is not None
+            for alias in node.names
+        ):
+            violations.append("SEGMENT_RULES_DIRECT_IMPORT_NOT_TYPE_ONLY")
+    if imported_names != ALLOWED_LIFECYCLE_ORACLE_TYPES:
+        violations.append("SEGMENT_RULES_TYPE_WHITELIST_NOT_EXACT")
+    violations.extend(
+        "SEGMENT_RULES_ORACLE_AUTHORITY_CALL"
+        for _ in _lifecycle_oracle_authority_calls(tree)
+    )
+    return violations
 
 
 def bars() -> list[RawBar]:
@@ -129,7 +250,7 @@ def test_reference_oracle_exposes_no_production_package_export():
 def test_only_segment_engine_core_may_import_or_call_reference_oracle():
     source_root = ROOT / "src/chan_parser"
     for path in source_root.rglob("*.py"):
-        if path in {ORACLE, SEGMENT_ENGINE}:
+        if path in {ORACLE, SEGMENT_ENGINE, SEGMENT_LIFECYCLE}:
             continue
         text = path.read_text(encoding="utf-8")
         assert "segment_rules" not in text, path
@@ -148,6 +269,30 @@ def test_only_segment_engine_core_may_import_or_call_reference_oracle():
             }
             for node in ast.walk(tree)
         ), path
+
+    lifecycle_tree = ast.parse(SEGMENT_LIFECYCLE.read_text(encoding="utf-8"))
+    lifecycle_oracle_imports = _direct_segment_rules_imports(lifecycle_tree)
+    assert lifecycle_oracle_imports
+    imported_lifecycle_names = {
+        alias.name
+        for node in lifecycle_oracle_imports
+        for alias in node.names
+    }
+    assert imported_lifecycle_names == ALLOWED_LIFECYCLE_ORACLE_TYPES
+    assert all(
+        alias.asname is None
+        for node in lifecycle_oracle_imports
+        for alias in node.names
+    )
+    assert _lifecycle_oracle_import_violations(lifecycle_tree) == []
+    lifecycle_oracle_call_count = sum(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in ALLOWED_LIFECYCLE_ORACLE_TYPES
+        for node in ast.walk(lifecycle_tree)
+    )
+    assert lifecycle_oracle_call_count == 0
+    assert _lifecycle_oracle_authority_calls(lifecycle_tree) == []
 
     engine_text = SEGMENT_ENGINE.read_text(encoding="utf-8")
     engine_tree = ast.parse(engine_text)
@@ -168,6 +313,94 @@ def test_only_segment_engine_core_may_import_or_call_reference_oracle():
     )
     assert "SegmentEngine" not in engine_init
     assert "segment" not in engine_init.lower()
+
+
+def test_lifecycle_oracle_gate_rejects_module_alias_attribute_call_bypass():
+    bypass = ast.parse(
+        "from ..contracts import segment_rules as rules\n"
+        "rules.classify_primary_destruction_case(left, center, right)\n"
+    )
+    assert len(_segment_rules_module_object_imports(bypass)) == 1
+    calls = _lifecycle_oracle_authority_calls(bypass)
+    assert len(calls) == 1
+    assert _call_terminal_name(calls[0]) == "classify_primary_destruction_case"
+
+
+def test_lifecycle_oracle_direct_import_paths_share_exact_type_whitelist():
+    allowed_names = (
+        "DestructionCase, PrimaryDestructionEvidence, SegmentDirection"
+    )
+    absolute = ast.parse(
+        "from chan_parser.contracts.segment_rules import " + allowed_names
+    )
+    relative = ast.parse(
+        "from ..contracts.segment_rules import " + allowed_names
+    )
+    assert _lifecycle_oracle_import_violations(absolute) == []
+    assert _lifecycle_oracle_import_violations(relative) == []
+
+
+def test_lifecycle_oracle_canonical_path_gate_rejects_foreign_suffix_matches():
+    allowed_names = (
+        "DestructionCase, PrimaryDestructionEvidence, SegmentDirection"
+    )
+    sources = (
+        "from foreign.segment_rules import " + allowed_names,
+        "from ..foreign.segment_rules import " + allowed_names,
+    )
+    for source in sources:
+        tree = ast.parse(source)
+        suffix_only_imports = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.split(".")[-1] == "segment_rules"
+        ]
+        assert suffix_only_imports
+        assert _direct_segment_rules_imports(tree) == []
+        assert "SEGMENT_RULES_NONCANONICAL_MODULE_PATH" in (
+            _lifecycle_oracle_import_violations(tree)
+        )
+
+
+def test_lifecycle_oracle_gate_rejects_extra_function_and_wildcard_imports():
+    forbidden_sources = (
+        "from chan_parser.contracts.segment_rules import PriceInterval",
+        "from chan_parser.contracts.segment_rules import "
+        "DestructionCase, PrimaryDestructionEvidence, SegmentDirection, PriceInterval",
+        "from ..contracts.segment_rules import classify_primary_destruction_case",
+        "from chan_parser.contracts.segment_rules import *",
+    )
+    for source in forbidden_sources:
+        assert _lifecycle_oracle_import_violations(ast.parse(source))
+
+
+def test_absolute_extra_type_was_missed_by_old_gate_and_is_now_blocked():
+    bypass = ast.parse(
+        "from chan_parser.contracts.segment_rules import PriceInterval"
+    )
+    old_exact_path_imports = [
+        node
+        for node in ast.walk(bypass)
+        if isinstance(node, ast.ImportFrom)
+        and f'{"." * node.level}{node.module or ""}'
+        == "..contracts.segment_rules"
+    ]
+    assert old_exact_path_imports == []
+    assert _segment_rules_module_object_imports(bypass) == []
+    assert _lifecycle_oracle_authority_calls(bypass) == []
+    assert _lifecycle_oracle_import_violations(bypass)
+
+
+def test_lifecycle_oracle_gate_rejects_absolute_module_alias_attribute_call():
+    bypass = ast.parse(
+        "import chan_parser.contracts.segment_rules as rules\n"
+        "rules.classify_secondary_confirmation(left, center, right)\n"
+    )
+    violations = _lifecycle_oracle_import_violations(bypass)
+    assert "SEGMENT_RULES_MODULE_OBJECT_IMPORT" in violations
+    assert "SEGMENT_RULES_ORACLE_AUTHORITY_CALL" in violations
 
 
 def test_phase1_parser_sources_have_no_segment_output_or_rule_profile_hook():
