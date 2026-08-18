@@ -1,0 +1,36 @@
+# Phase 2 Stage C-A Segment checkpoint semantic-state contract.
+profile_id: minimal_segment_checkpoint_contract_v1
+profile_version: "0.1.0"
+status: CONTRACT_ONLY
+
+source_segment_profile_id: minimal_segment_engine_core_v1
+source_segment_profile_version: "0.1.0"
+source_lifecycle_emission_profile_id: minimal_segment_lifecycle_emission_v1
+source_lifecycle_emission_profile_version: "0.1.0"
+source_lifecycle_emission_baseline_commit: 937ad3a3d805fd36527a8c295e04141232e53a1e
+
+checkpoint:
+  semantic_state_only: true
+  event_log_snapshot_owned_elsewhere: true
+  partial_lifecycle_prefix_allowed: false
+  second_case_state_capture_allowed: true
+  second_case_orchestration_enabled: false
+
+binding:
+  source_strokes_required: true
+  source_stroke_content_hashes_required: true
+  source_stroke_semantic_hashes_required: true
+  first_case_segment_binding_required: true
+  segment_semantic_hash_required: true
+  first_case_complete_lifecycle_pair_required: true
+  canonical_intent_key_validation_required: true
+  lifecycle_event_semantic_hashes_required: true
+  zero_event_outcomes_require_empty_lifecycle_slice: true
+
+integration:
+  full_rebuild_integration_enabled: false
+  incremental_integration_enabled: false
+  checkpoint_runtime_integration_enabled: false
+  bounded_tail_segment_recompute_enabled: false
+  parser_integration_enabled: false
+  center_or_zhongshu_enabled: false
