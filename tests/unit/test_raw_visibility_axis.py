@@ -129,6 +129,20 @@ def test_bar_index_offset_confirmation_uses_raw_visibility():
     assert previous.confirmed_at_raw_bar_index >= previous.created_at_raw_bar_index
 
 
+def test_invalid_merged_raw_visibility_fails_closed():
+    bars = [merged(index) for index in range(20)]
+    bars[9].visible_at_raw_bar_index = -1
+    fx = [
+        fractal("fx1", FractalType.BOTTOM, 1, 98),
+        fractal("fx2", FractalType.TOP, 8, 108),
+    ]
+    with pytest.raises(
+        ValueError,
+        match="merged bar raw visibility provenance is invalid",
+    ):
+        stroke_engine().process(fx, bars, 20)
+
+
 @pytest.mark.parametrize(
     ("source_ids", "source_indices", "visible"),
     [
@@ -139,7 +153,9 @@ def test_bar_index_offset_confirmation_uses_raw_visibility():
     ],
     ids=["duplicate-ids", "empty-id", "non-string-id", "negative-index"],
 )
-def test_invalid_merged_raw_visibility_fails_closed(source_ids, source_indices, visible):
+def test_malformed_merged_raw_provenance_fails_closed(
+    source_ids, source_indices, visible
+):
     bars = [merged(index) for index in range(20)]
     bars[9].source_raw_bar_ids = source_ids
     bars[9].source_raw_bar_indices = source_indices
@@ -148,5 +164,8 @@ def test_invalid_merged_raw_visibility_fails_closed(source_ids, source_indices, 
         fractal("fx1", FractalType.BOTTOM, 1, 98),
         fractal("fx2", FractalType.TOP, 8, 108),
     ]
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match="merged bar raw visibility provenance is invalid",
+    ):
         stroke_engine().process(fx, bars, 20)
