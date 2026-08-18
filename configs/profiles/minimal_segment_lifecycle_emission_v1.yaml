@@ -1,0 +1,35 @@
+# Phase 2 Stage B Segment lifecycle emission profile.
+profile_id: minimal_segment_lifecycle_emission_v1
+profile_version: "0.1.0"
+status: EMITTER_ONLY
+
+source_lifecycle_contract_profile_id: minimal_segment_lifecycle_contract_v1
+source_lifecycle_contract_profile_version: "0.1.0"
+source_lifecycle_contract_baseline_commit: f0b795f4487ec4713bed7a2a3abca14c7ae63f58
+
+source_segment_profile_id: minimal_segment_engine_core_v1
+source_segment_profile_version: "0.1.0"
+
+emission:
+  event_emission_enabled: true
+  event_id_authority: EventLog
+  intent_key_field: segment_lifecycle_intent_key
+  binding_key_field: segment_lifecycle_binding_key
+  canonical_prefix_history_required: true
+  partial_created_recovery_enabled: true
+
+binding:
+  source_strokes_required_for_first_case: true
+  exact_primary_feature_elements_required: true
+  full_feature_visibility_revalidation_required: true
+  ordered_feature_provenance_required: true
+  caller_supplied_intents_allowed: false
+  canonical_oracle_calls_allowed: false
+
+integration:
+  parser_integration_enabled: false
+  checkpoint_integration_enabled: false
+  bounded_tail_integration_enabled: false
+  full_incremental_integration_enabled: false
+  second_case_confirmation_enabled: false
+  center_or_zhongshu_enabled: false
