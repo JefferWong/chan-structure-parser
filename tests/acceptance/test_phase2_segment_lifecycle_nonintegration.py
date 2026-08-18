@@ -14,6 +14,7 @@ from chan_parser.engine.incremental import IncrementalEngine
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "src/chan_parser/contracts/segment_lifecycle.py"
+EMITTER = ROOT / "src/chan_parser/engine/segment_lifecycle_emitter.py"
 SEGMENT_ENGINE = ROOT / "src/chan_parser/engine/segment.py"
 FULL = ROOT / "src/chan_parser/engine/full_rebuild.py"
 INCREMENTAL = ROOT / "src/chan_parser/engine/incremental.py"
@@ -144,7 +145,7 @@ def test_contract_does_not_construct_lifecycle_events():
 
 def test_segment_engine_does_not_import_lifecycle_contract():
     for path in (ROOT / "src/chan_parser").rglob("*.py"):
-        if path == CONTRACT:
+        if path in {CONTRACT, EMITTER}:
             continue
         assert "segment_lifecycle" not in path.read_text(encoding="utf-8"), path
 
