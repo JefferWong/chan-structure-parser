@@ -74,6 +74,15 @@ def test_duplicate_or_unresolvable_raw_identity_fails_closed():
         InclusionEngine({}).process([unresolved])
 
 
+def test_cross_merged_bar_source_ownership_conflict_fails_closed():
+    first = raw("alpha", 10, 100, 105, 98, 103)
+    second = raw("beta", 11, 106, 109, 103, 108)
+    first.source_raw_bar_ids = ["beta"]
+    second.source_raw_bar_ids = ["beta"]
+    with pytest.raises(ValueError, match="merged bar raw provenance is not uniquely resolvable"):
+        InclusionEngine({}).process([first, second])
+
+
 def test_stroke_creation_and_confirmation_use_right_fractal_raw_visibility():
     bars = [merged(index) for index in range(20)]
     fx = [
@@ -120,9 +129,21 @@ def test_bar_index_offset_confirmation_uses_raw_visibility():
     assert previous.confirmed_at_raw_bar_index >= previous.created_at_raw_bar_index
 
 
-def test_invalid_merged_raw_visibility_fails_closed():
+@pytest.mark.parametrize(
+    ("source_ids", "source_indices", "visible"),
+    [
+        (["raw-9", "raw-9"], [19, 19], 19),
+        ([""], [19], 19),
+        ([9], [19], 19),
+        (["raw-left", "raw-right"], [-1, 19], 19),
+    ],
+    ids=["duplicate-ids", "empty-id", "non-string-id", "negative-index"],
+)
+def test_invalid_merged_raw_visibility_fails_closed(source_ids, source_indices, visible):
     bars = [merged(index) for index in range(20)]
-    bars[9].visible_at_raw_bar_index = -1
+    bars[9].source_raw_bar_ids = source_ids
+    bars[9].source_raw_bar_indices = source_indices
+    bars[9].visible_at_raw_bar_index = visible
     fx = [
         fractal("fx1", FractalType.BOTTOM, 1, 98),
         fractal("fx2", FractalType.TOP, 8, 108),

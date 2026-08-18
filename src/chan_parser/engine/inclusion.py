@@ -56,18 +56,23 @@ class InclusionEngine:
 
         merged: list[MergedBar] = []
         events: list[LifecycleEvent] = []
+        claimed_source_ids: set[str] = set()
         for local_idx, bar in enumerate(work):
             global_idx = index_offset + local_idx
             merge_direction = work_directions[local_idx]
             source_ids = list(bar.source_raw_bar_ids or [bar.bar_id])
             if not source_ids or len(set(source_ids)) != len(source_ids):
                 raise ValueError("merged bar raw provenance cannot be empty")
+            current_source_ids = set(source_ids)
+            if current_source_ids.intersection(claimed_source_ids):
+                raise ValueError("merged bar raw provenance is not uniquely resolvable")
             try:
                 source_indices = [raw_index_by_id[source_id] for source_id in source_ids]
             except (KeyError, TypeError) as exc:
                 raise ValueError("merged bar raw provenance is not uniquely resolvable") from exc
             if any(type(index) is not int for index in source_indices):
                 raise ValueError("merged bar raw provenance index must be int")
+            claimed_source_ids.update(current_source_ids)
             mb = MergedBar(
                 bar_id=f"mbar_{global_idx + 1:06d}",
                 bar_index=global_idx,

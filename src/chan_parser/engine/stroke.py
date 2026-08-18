@@ -239,11 +239,15 @@ class StrokeEngine:
         if local_index < 0 or local_index >= len(merged_bars):
             raise ValueError("fractal right merged bar is unavailable")
         merged = merged_bars[local_index]
+        source_ids = merged.source_raw_bar_ids
+        source_indices = merged.source_raw_bar_indices
         if (type(merged.visible_at_raw_bar_index) is not int
                 or merged.visible_at_raw_bar_index < 0
-                or len(merged.source_raw_bar_ids) == 0
-                or len(merged.source_raw_bar_indices) != len(merged.source_raw_bar_ids)
-                or any(type(index) is not int for index in merged.source_raw_bar_indices)
-                or merged.visible_at_raw_bar_index != max(merged.source_raw_bar_indices)):
+                or not source_ids
+                or any(not isinstance(source_id, str) or not source_id for source_id in source_ids)
+                or len(set(source_ids)) != len(source_ids)
+                or len(source_indices) != len(source_ids)
+                or any(type(index) is not int or index < 0 for index in source_indices)
+                or merged.visible_at_raw_bar_index != max(source_indices)):
             raise ValueError("merged bar raw visibility provenance is invalid")
         return merged.visible_at_raw_bar_index
