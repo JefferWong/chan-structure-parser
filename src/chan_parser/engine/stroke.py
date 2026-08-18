@@ -30,6 +30,10 @@ class StrokeEngine:
             return [], []
         strokes: list[Stroke] = []
         events: list[LifecycleEvent] = []
+        raw_axis_enabled = any(
+            mb.source_raw_bar_indices or mb.visible_at_raw_bar_index != -1
+            for mb in merged_bars
+        )
         anchor = fractals[0]
         counter = id_offset + 1
         for candidate in fractals[1:]:
@@ -86,7 +90,15 @@ class StrokeEngine:
             if strokes:
                 previous = strokes[-1]
                 if previous.end_fractal_id == stroke.start_fractal_id and previous.status == StructureStatus.PROVISIONAL:
+                    confirming_raw_index = self._raw_visibility_at_right_fractal(
+                        candidate, merged_bars, bar_index_offset, raw_axis_enabled
+                    )
+                    if (confirming_raw_index is not None
+                            and previous.created_at_raw_bar_index is not None
+                            and confirming_raw_index < previous.created_at_raw_bar_index):
+                        raise ValueError("stroke raw confirmation visibility regressed")
                     previous.mark_confirmed(stroke.end_bar_index)
+                    previous.confirmed_at_raw_bar_index = confirming_raw_index
                     previous.repaint_risk = "NONE"
                     previous.confirmation_requirements = []
                     events.append(LifecycleEvent(
@@ -178,6 +190,10 @@ class StrokeEngine:
         local_start = f1.merged_bar_index - bar_index_offset
         local_end = f2.merged_bar_index - bar_index_offset
         interval = bars[local_start:local_end + 1]
+        created_raw_index = self._raw_visibility_at_right_fractal(
+            f2, bars, bar_index_offset,
+            any(mb.source_raw_bar_indices or mb.visible_at_raw_bar_index != -1 for mb in bars),
+        )
         direction_code = "U" if direction == StrokeDirection.UP else "D"
         stroke_id = (
             f"stroke_{f1.merged_bar_index + 1:06d}_"
@@ -205,4 +221,29 @@ class StrokeEngine:
             confirmation_requirements=["next strict stroke must confirm"],
             rule_profile=self.rule_profile,
             rule_version=self.rule_version,
+            created_at_raw_bar_index=created_raw_index,
         )
+
+    @staticmethod
+    def _raw_visibility_at_right_fractal(
+        fractal: Fractal,
+        merged_bars: list[MergedBar],
+        bar_index_offset: int,
+        raw_axis_enabled: bool,
+    ) -> int | None:
+        if not raw_axis_enabled:
+            return None
+        if not fractal.window_indices or type(fractal.window_indices[-1]) is not int:
+            raise ValueError("fractal right merged index is invalid")
+        local_index = fractal.window_indices[-1] - bar_index_offset
+        if local_index < 0 or local_index >= len(merged_bars):
+            raise ValueError("fractal right merged bar is unavailable")
+        merged = merged_bars[local_index]
+        if (type(merged.visible_at_raw_bar_index) is not int
+                or merged.visible_at_raw_bar_index < 0
+                or len(merged.source_raw_bar_ids) == 0
+                or len(merged.source_raw_bar_indices) != len(merged.source_raw_bar_ids)
+                or any(type(index) is not int for index in merged.source_raw_bar_indices)
+                or merged.visible_at_raw_bar_index != max(merged.source_raw_bar_indices)):
+            raise ValueError("merged bar raw visibility provenance is invalid")
+        return merged.visible_at_raw_bar_index

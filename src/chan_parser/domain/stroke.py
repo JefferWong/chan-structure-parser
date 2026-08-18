@@ -38,6 +38,10 @@ class Stroke(StructureObject):
     confirmation_requirements: list[str] = field(default_factory=list)
     repaint_risk: str = "NONE"               # NONE / LOW / MEDIUM / HIGH
 
+    # Explicit raw-visibility axis; legacy merged-axis fields above remain unchanged.
+    created_at_raw_bar_index: Optional[int] = None
+    confirmed_at_raw_bar_index: Optional[int] = None
+
     def to_dict(self) -> dict:
         return {
             "object_id": self.object_id,
