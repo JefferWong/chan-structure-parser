@@ -254,6 +254,23 @@ def test_raw_visibility_source_contract_fails_closed(mutation, message):
         engine().process_primary(strokes, sequence_id="primary:raw-invalid")
 
 
+def test_cross_stroke_raw_metadata_partial_fails_closed():
+    strokes = make_strokes(
+        [0, 10, 4, 12, 6, 11, 5],
+        raw_visibility_overrides={index: (index + 10, index + 10) for index in range(6)},
+    )
+    strokes[2] = replace(
+        strokes[2],
+        created_at_raw_bar_index=None,
+        confirmed_at_raw_bar_index=None,
+    )
+    with pytest.raises(
+        SegmentEngineCoreError,
+        match="SEGMENT_SOURCE_RAW_VISIBILITY_PARTIAL",
+    ):
+        engine().process_primary(strokes, sequence_id="primary:raw-cross-stroke-partial")
+
+
 def test_single_raw_lifecycle_field_fails_closed():
     strokes = make_strokes([0, 10, 4, 12, 6, 11, 5])
     strokes[0] = replace(strokes[0], confirmed_at_raw_bar_index=10)
@@ -280,6 +297,33 @@ def test_legacy_segment_raw_lifecycle_is_none_and_serialization_hash_boundary_is
         created_at_raw_bar_index=100,
         confirmed_at_raw_bar_index=101,
     ).content_hash()
+
+
+def test_raw_first_case_preserves_legacy_structural_identity():
+    legacy_strokes = make_strokes(
+        [0, 10, 4, 12, 6, 11, 5],
+        visibility_overrides={3: 8},
+    )
+    raw_strokes = make_strokes(
+        [0, 10, 4, 12, 6, 11, 5],
+        visibility_overrides={3: 8},
+        raw_visibility_overrides={index: (index + 10, index + 10) for index in range(6)},
+    )
+    legacy = engine().process_primary(legacy_strokes, sequence_id="primary:identity")
+    raw = engine().process_primary(raw_strokes, sequence_id="primary:identity")
+    assert legacy.reason_code == "SEGMENT_FIRST_CASE_CONFIRMED"
+    assert raw.reason_code == "SEGMENT_FIRST_CASE_CONFIRMED"
+    assert legacy.segment is not None and raw.segment is not None
+    assert raw.segment.segment_id == legacy.segment.segment_id
+    assert raw.segment.logical_id == legacy.segment.logical_id
+    assert raw.segment.start_bar_index == legacy.segment.start_bar_index
+    assert raw.segment.end_bar_index == legacy.segment.end_bar_index
+    assert raw.segment.created_at_bar == legacy.segment.created_at_bar
+    assert raw.segment.confirmed_at_bar == legacy.segment.confirmed_at_bar
+    assert legacy.segment.created_at_raw_bar_index is None
+    assert legacy.segment.confirmed_at_raw_bar_index is None
+    assert raw.segment.created_at_raw_bar_index is not None
+    assert raw.segment.confirmed_at_raw_bar_index is not None
 
 
 def test_down_first_case_materializes_confirmed_segment():
@@ -312,24 +356,40 @@ def test_second_case_remains_pending_without_materialization():
     assert result.segment is None
 
 
-def test_raw_pending_outcomes_do_not_materialize_segment_lifecycle():
-    for points in ([0, 3, 1, 8, 5, 7, 4], [0, 10, 4, 12, 6]):
-        result = engine().process_primary(
-            make_strokes(
-                list(points),
-                raw_visibility_overrides={
-                    index: (index + 10, index + 10)
-                    for index in range(len(points) - 1)
-                },
-            ),
-            sequence_id="primary:raw-pending",
-        )
-        assert result.reason_code in {
-            "SEGMENT_FEATURE_WINDOW_INCOMPLETE",
-            "SEGMENT_SECOND_CASE_PENDING",
-            "SEGMENT_PRIMARY_FRACTAL_NOT_FOUND",
-        }
-        assert result.segment is None
+def test_raw_second_case_pending_is_exact_and_does_not_materialize_segment():
+    result = engine().process_primary(
+        make_strokes(
+            [0, 3, 1, 8, 5, 7, 4],
+            raw_visibility_overrides={index: (index + 10, index + 10) for index in range(6)},
+        ),
+        sequence_id="primary:raw-second-case-pending",
+    )
+    assert result.reason_code == "SEGMENT_SECOND_CASE_PENDING"
+    assert result.segment is None
+
+
+def test_raw_feature_window_incomplete_is_exact_and_does_not_materialize_segment():
+    result = engine().process_primary(
+        make_strokes(
+            [0, 10, 4, 12, 6],
+            raw_visibility_overrides={index: (index + 10, index + 10) for index in range(4)},
+        ),
+        sequence_id="primary:raw-feature-window-incomplete",
+    )
+    assert result.reason_code == "SEGMENT_FEATURE_WINDOW_INCOMPLETE"
+    assert result.segment is None
+
+
+def test_raw_primary_fractal_not_found_is_exact_and_does_not_materialize_segment():
+    result = engine().process_primary(
+        make_strokes(
+            [0, 10, 4, 11, 5, 12, 6],
+            raw_visibility_overrides={index: (index + 10, index + 10) for index in range(6)},
+        ),
+        sequence_id="primary:raw-primary-fractal-not-found",
+    )
+    assert result.reason_code == "SEGMENT_PRIMARY_FRACTAL_NOT_FOUND"
+    assert result.segment is None
 
 
 def test_source_sequence_must_be_alternating_and_contiguous():
