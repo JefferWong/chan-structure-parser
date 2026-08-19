@@ -21,7 +21,7 @@ PRODUCTION_BASELINE_SHA256 = {
         "aef46f378607560c0c2fb0015f0041b8c7092a01292560c1a5fb6c1563cd9cd8"
     ),
     SOURCE / "engine/segment.py": (
-        "26c3c48edcdd71f5856af0ffde90e670899ae8372be229dff3b2fef7d97ce9ea"
+        "d32a3f39f8e8abc95178db726f3eaabc4826789afd4f9d482b1634dad1527d21"
     ),
     SOURCE / "engine/segment_lifecycle_emitter.py": (
         "5049668739f6b71633e083d5ba14145964c536dd1e20e879e3ad7c4e39497f73"

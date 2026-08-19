@@ -17,7 +17,6 @@ SOURCE = ROOT / "src/chan_parser"
 BASELINE = {
     SOURCE / "engine/full_rebuild.py": "2afef353341c5e35092885b4b48d0c4944dc9e8ae57d66f949c5b4538e39b36d",
     SOURCE / "engine/incremental.py": "aef46f378607560c0c2fb0015f0041b8c7092a01292560c1a5fb6c1563cd9cd8",
-    SOURCE / "engine/segment.py": "26c3c48edcdd71f5856af0ffde90e670899ae8372be229dff3b2fef7d97ce9ea",
     SOURCE / "engine/segment_lifecycle_emitter.py": "5049668739f6b71633e083d5ba14145964c536dd1e20e879e3ad7c4e39497f73",
     SOURCE / "contracts/segment_checkpoint.py": "2079d159ef134a032d4d45c04d580797491e08c5ce01ca827107776297ad5880",
 }
@@ -54,11 +53,15 @@ def test_raw_visibility_authority_sets_are_durable_and_exact():
     }
     assert _production_users("created_at_raw_bar_index") == {
         Path("src/chan_parser/domain/stroke.py"),
+        Path("src/chan_parser/domain/segment.py"),
         Path("src/chan_parser/engine/stroke.py"),
+        Path("src/chan_parser/engine/segment.py"),
     }
     assert _production_users("confirmed_at_raw_bar_index") == {
         Path("src/chan_parser/domain/stroke.py"),
+        Path("src/chan_parser/domain/segment.py"),
         Path("src/chan_parser/engine/stroke.py"),
+        Path("src/chan_parser/engine/segment.py"),
     }
 
 
@@ -80,7 +83,6 @@ def test_legacy_runtime_files_remain_byte_exact_and_outputs_do_not_serialize_raw
 
 def test_raw_visibility_field_is_not_consumed_by_forbidden_production_modules():
     forbidden = (
-        SOURCE / "engine/segment.py",
         SOURCE / "engine/full_rebuild.py",
         SOURCE / "engine/incremental.py",
         SOURCE / "contracts/segment_checkpoint.py",
@@ -90,6 +92,24 @@ def test_raw_visibility_field_is_not_consumed_by_forbidden_production_modules():
     for path in forbidden:
         assert "created_at_raw_bar_index" not in path.read_text(encoding="utf-8")
         assert "confirmed_at_raw_bar_index" not in path.read_text(encoding="utf-8")
+
+
+def test_segment_engine_is_the_only_segment_raw_visibility_consumer():
+    segment = (SOURCE / "engine/segment.py").read_text(encoding="utf-8")
+    assert "created_at_raw_bar_index" in segment
+    assert "confirmed_at_raw_bar_index" in segment
+
+
+def test_deferred_full_rebuild_reference_markers_are_absent():
+    forbidden_markers = (
+        "FullRebuild" + "SegmentReferenceError",
+        "R1_FIRST_CASE_" + "VISIBILITY_REPLAY",
+        "FULL_REBUILD_" + "SEGMENT_BACKFILL_FORBIDDEN",
+    )
+    for path in ROOT.rglob("*.py"):
+        if "__pycache__" not in path.parts and path != Path(__file__):
+            text = path.read_text(encoding="utf-8")
+            assert not any(marker in text for marker in forbidden_markers), path
 
 
 def test_legacy_confirmed_at_remains_merged_axis():

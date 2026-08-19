@@ -139,6 +139,7 @@ class SegmentEngine:
     ) -> SegmentEngineResult:
         """Evaluate the first confirmable primary feature window in source order."""
         source = self._validate_source_strokes(strokes, sequence_id=sequence_id)
+        raw_visibility_mode = self._raw_visibility_mode(source)
         candidate_direction = source[0].direction
         rule_direction = self._to_rule_direction(candidate_direction)
 
@@ -216,6 +217,7 @@ class SegmentEngine:
                     source,
                     window,
                     evidence,
+                    raw_visibility_mode=raw_visibility_mode,
                 )
                 return SegmentEngineResult(
                     "SEGMENT_FIRST_CASE_CONFIRMED",
@@ -328,6 +330,40 @@ class SegmentEngine:
                     "SEGMENT_SOURCE_ENDPOINT_PRICE_NOT_CONTIGUOUS"
                 )
         return values
+
+    @staticmethod
+    def _raw_visibility_mode(source: tuple[Stroke, ...]) -> bool:
+        presence = tuple(
+            (
+                stroke.created_at_raw_bar_index is not None,
+                stroke.confirmed_at_raw_bar_index is not None,
+            )
+            for stroke in source
+        )
+        if any(created != confirmed for created, confirmed in presence):
+            raise SegmentEngineCoreError(
+                "SEGMENT_SOURCE_RAW_VISIBILITY_PARTIAL"
+            )
+        if not any(created for created, _ in presence):
+            return False
+        if not all(created for created, _ in presence):
+            raise SegmentEngineCoreError(
+                "SEGMENT_SOURCE_RAW_VISIBILITY_PARTIAL"
+            )
+        for stroke in source:
+            created = stroke.created_at_raw_bar_index
+            confirmed = stroke.confirmed_at_raw_bar_index
+            if (
+                type(created) is not int
+                or type(confirmed) is not int
+                or created < 0
+                or confirmed < 0
+                or confirmed < created
+            ):
+                raise SegmentEngineCoreError(
+                    "SEGMENT_SOURCE_RAW_VISIBILITY_INVALID"
+                )
+        return True
 
     def _raw_feature_element(
         self,
@@ -470,6 +506,25 @@ class SegmentEngine:
         )
 
     @staticmethod
+    def _raw_feature_visibility(
+        element: FeatureElementRuleInput,
+        source_by_logical_id: Mapping[str, Stroke],
+    ) -> int:
+        provenance = element.interval.source_stroke_logical_ids
+        try:
+            values = tuple(
+                source_by_logical_id[logical_id].confirmed_at_raw_bar_index
+                for logical_id in provenance
+            )
+        except KeyError as error:
+            raise SegmentEngineCoreError(
+                "SEGMENT_RAW_FEATURE_PROVENANCE_MISSING"
+            ) from error
+        if not values or any(type(value) is not int for value in values):
+            raise SegmentEngineCoreError("SEGMENT_RAW_FEATURE_VISIBILITY_INVALID")
+        return max(values)
+
+    @staticmethod
     def _select_bound_endpoint(
         price: float,
         candidates: tuple[FeatureEndpointEvidence, ...],
@@ -499,6 +554,8 @@ class SegmentEngine:
             FeatureElementRuleInput,
         ],
         evidence: PrimaryDestructionEvidence,
+        *,
+        raw_visibility_mode: bool,
     ) -> Segment:
         endpoint = evidence.endpoint
         if endpoint is None:
@@ -546,6 +603,13 @@ class SegmentEngine:
                 for element in window
             ),
         )
+        raw_confirmed_at = None
+        if raw_visibility_mode:
+            source_by_logical_id = {stroke.logical_id: stroke for stroke in source}
+            raw_confirmed_at = max(
+                self._raw_feature_visibility(element, source_by_logical_id)
+                for element in window
+            )
         by_logical_id = {stroke.logical_id: stroke for stroke in source}
         feature_logical_ids = tuple(
             logical_source
@@ -573,6 +637,8 @@ class SegmentEngine:
             status=StructureStatus.CONFIRMED,
             created_at_bar=confirmed_at,
             confirmed_at_bar=confirmed_at,
+            created_at_raw_bar_index=raw_confirmed_at,
+            confirmed_at_raw_bar_index=raw_confirmed_at,
             rule_profile=self.profile_id,
             rule_version=self.profile_version,
             segment_id=segment_id,

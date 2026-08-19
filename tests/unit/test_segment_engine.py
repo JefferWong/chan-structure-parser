@@ -32,12 +32,15 @@ def make_strokes(
     points: list[float],
     *,
     visibility_overrides: dict[int, int] | None = None,
+    raw_visibility_overrides: dict[int, tuple[int, int]] | None = None,
 ) -> list[Stroke]:
     visibility_overrides = visibility_overrides or {}
+    raw_visibility_overrides = raw_visibility_overrides or {}
     strokes: list[Stroke] = []
     for index, (start, end) in enumerate(zip(points, points[1:])):
         direction = StrokeDirection.UP if start < end else StrokeDirection.DOWN
         confirmed_at = visibility_overrides.get(index, index + 1)
+        raw_created, raw_confirmed = raw_visibility_overrides.get(index, (None, None))
         strokes.append(Stroke(
             object_id=f"stroke_{index:06d}_r1",
             logical_id=f"stroke:{index}",
@@ -61,6 +64,8 @@ def make_strokes(
             price_range=abs(end - start),
             confirmation_requirements=[],
             repaint_risk="NONE",
+            created_at_raw_bar_index=raw_created,
+            confirmed_at_raw_bar_index=raw_confirmed,
         ))
     return strokes
 
@@ -112,6 +117,25 @@ def test_seeded_inclusion_merges_with_stable_provenance():
     assert merged.interval.source_stroke_logical_ids == ("stroke:3", "stroke:5")
     assert merged.start_endpoint.endpoint_id == "fx:3"
     assert merged.end_endpoint.endpoint_id == "fx:6"
+
+
+def test_normalized_inclusion_raw_visibility_uses_all_source_strokes():
+    strokes = make_strokes(
+        [0, 9, 4, 10, 5, 10, 6],
+        raw_visibility_overrides={
+            0: (10, 10),
+            1: (11, 11),
+            2: (12, 12),
+            3: (13, 13),
+            4: (14, 14),
+            5: (25, 25),
+        },
+    )
+    result = engine().process_primary(strokes, sequence_id="primary:raw-inclusion")
+    merged = result.feature_elements[1]
+    assert merged.interval.source_stroke_logical_ids == ("stroke:3", "stroke:5")
+    source_by_id = {stroke.logical_id: stroke for stroke in strokes}
+    assert engine()._raw_feature_visibility(merged, source_by_id) == 25
 
 
 def test_equal_extremum_tie_uses_earliest_source_bar():
@@ -175,6 +199,133 @@ def test_first_case_confirmation_waits_for_all_feature_elements():
     assert result.segment.confirmed_at_bar == 9
 
 
+def test_raw_visibility_preserves_structural_lifecycle_axis():
+    strokes = make_strokes(
+        [0, 10, 4, 12, 6, 11, 5],
+        visibility_overrides={3: 8},
+        raw_visibility_overrides={
+            index: (index + 10, index + 10)
+            for index in range(6)
+        },
+    )
+    result = engine().process_primary(
+        strokes,
+        sequence_id="primary:raw-axis",
+    )
+    assert result.reason_code == "SEGMENT_FIRST_CASE_CONFIRMED"
+    assert result.segment is not None
+    assert result.segment.confirmed_at_bar == 8
+    assert result.segment.created_at_bar == 8
+    assert result.segment.created_at_raw_bar_index == 15
+    assert result.segment.confirmed_at_raw_bar_index == 15
+    assert [item.visible_at_bar_index for item in result.feature_elements] == [2, 8, 6]
+    source_by_id = {stroke.logical_id: stroke for stroke in strokes}
+    assert max(
+        engine()._raw_feature_visibility(item, source_by_id)
+        for item in result.feature_elements
+    ) == 15
+    assert result.segment.start_bar_index == 0
+    assert result.segment.end_bar_index == 3
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda values: values.__setitem__(0, replace(values[0], created_at_raw_bar_index=1,
+                                                       confirmed_at_raw_bar_index=None)),
+         "SEGMENT_SOURCE_RAW_VISIBILITY_PARTIAL"),
+        (lambda values: values.__setitem__(0, replace(values[0], confirmed_at_raw_bar_index=-1)),
+         "SEGMENT_SOURCE_RAW_VISIBILITY_INVALID"),
+        (lambda values: values.__setitem__(0, replace(values[0], created_at_raw_bar_index=True,
+                                                       confirmed_at_raw_bar_index=2)),
+         "SEGMENT_SOURCE_RAW_VISIBILITY_INVALID"),
+        (lambda values: values.__setitem__(0, replace(values[0], created_at_raw_bar_index=3,
+                                                       confirmed_at_raw_bar_index=2)),
+         "SEGMENT_SOURCE_RAW_VISIBILITY_INVALID"),
+    ],
+)
+def test_raw_visibility_source_contract_fails_closed(mutation, message):
+    strokes = make_strokes(
+        [0, 10, 4, 12, 6, 11, 5],
+        raw_visibility_overrides={index: (index + 10, index + 10) for index in range(6)},
+    )
+    mutation(strokes)
+    with pytest.raises(SegmentEngineCoreError, match=message):
+        engine().process_primary(strokes, sequence_id="primary:raw-invalid")
+
+
+def test_cross_stroke_raw_metadata_partial_fails_closed():
+    strokes = make_strokes(
+        [0, 10, 4, 12, 6, 11, 5],
+        raw_visibility_overrides={index: (index + 10, index + 10) for index in range(6)},
+    )
+    strokes[2] = replace(
+        strokes[2],
+        created_at_raw_bar_index=None,
+        confirmed_at_raw_bar_index=None,
+    )
+    with pytest.raises(
+        SegmentEngineCoreError,
+        match="SEGMENT_SOURCE_RAW_VISIBILITY_PARTIAL",
+    ):
+        engine().process_primary(strokes, sequence_id="primary:raw-cross-stroke-partial")
+
+
+def test_single_raw_lifecycle_field_fails_closed():
+    strokes = make_strokes([0, 10, 4, 12, 6, 11, 5])
+    strokes[0] = replace(strokes[0], confirmed_at_raw_bar_index=10)
+    with pytest.raises(
+        SegmentEngineCoreError,
+        match="SEGMENT_SOURCE_RAW_VISIBILITY_PARTIAL",
+    ):
+        engine().process_primary(strokes, sequence_id="primary:raw-single-field")
+
+
+def test_legacy_segment_raw_lifecycle_is_none_and_serialization_hash_boundary_is_unchanged():
+    result = engine().process_primary(
+        make_strokes([0, 10, 4, 12, 6, 11, 5]),
+        sequence_id="primary:legacy-axis",
+    )
+    assert result.segment is not None
+    assert result.segment.created_at_raw_bar_index is None
+    assert result.segment.confirmed_at_raw_bar_index is None
+    payload = result.segment.to_dict()
+    assert "created_at_raw_bar_index" not in payload
+    assert "confirmed_at_raw_bar_index" not in payload
+    assert result.segment.content_hash() == replace(
+        result.segment,
+        created_at_raw_bar_index=100,
+        confirmed_at_raw_bar_index=101,
+    ).content_hash()
+
+
+def test_raw_first_case_preserves_legacy_structural_identity():
+    legacy_strokes = make_strokes(
+        [0, 10, 4, 12, 6, 11, 5],
+        visibility_overrides={3: 8},
+    )
+    raw_strokes = make_strokes(
+        [0, 10, 4, 12, 6, 11, 5],
+        visibility_overrides={3: 8},
+        raw_visibility_overrides={index: (index + 10, index + 10) for index in range(6)},
+    )
+    legacy = engine().process_primary(legacy_strokes, sequence_id="primary:identity")
+    raw = engine().process_primary(raw_strokes, sequence_id="primary:identity")
+    assert legacy.reason_code == "SEGMENT_FIRST_CASE_CONFIRMED"
+    assert raw.reason_code == "SEGMENT_FIRST_CASE_CONFIRMED"
+    assert legacy.segment is not None and raw.segment is not None
+    assert raw.segment.segment_id == legacy.segment.segment_id
+    assert raw.segment.logical_id == legacy.segment.logical_id
+    assert raw.segment.start_bar_index == legacy.segment.start_bar_index
+    assert raw.segment.end_bar_index == legacy.segment.end_bar_index
+    assert raw.segment.created_at_bar == legacy.segment.created_at_bar
+    assert raw.segment.confirmed_at_bar == legacy.segment.confirmed_at_bar
+    assert legacy.segment.created_at_raw_bar_index is None
+    assert legacy.segment.confirmed_at_raw_bar_index is None
+    assert raw.segment.created_at_raw_bar_index is not None
+    assert raw.segment.confirmed_at_raw_bar_index is not None
+
+
 def test_down_first_case_materializes_confirmed_segment():
     result = engine().process_primary(
         make_strokes([12, 2, 8, 0, 6, 1, 7]),
@@ -202,6 +353,42 @@ def test_second_case_remains_pending_without_materialization():
         == DestructionCase.SECOND_CASE_PENDING
     )
     assert result.pending_second_case is not None
+    assert result.segment is None
+
+
+def test_raw_second_case_pending_is_exact_and_does_not_materialize_segment():
+    result = engine().process_primary(
+        make_strokes(
+            [0, 3, 1, 8, 5, 7, 4],
+            raw_visibility_overrides={index: (index + 10, index + 10) for index in range(6)},
+        ),
+        sequence_id="primary:raw-second-case-pending",
+    )
+    assert result.reason_code == "SEGMENT_SECOND_CASE_PENDING"
+    assert result.segment is None
+
+
+def test_raw_feature_window_incomplete_is_exact_and_does_not_materialize_segment():
+    result = engine().process_primary(
+        make_strokes(
+            [0, 10, 4, 12, 6],
+            raw_visibility_overrides={index: (index + 10, index + 10) for index in range(4)},
+        ),
+        sequence_id="primary:raw-feature-window-incomplete",
+    )
+    assert result.reason_code == "SEGMENT_FEATURE_WINDOW_INCOMPLETE"
+    assert result.segment is None
+
+
+def test_raw_primary_fractal_not_found_is_exact_and_does_not_materialize_segment():
+    result = engine().process_primary(
+        make_strokes(
+            [0, 10, 4, 11, 5, 12, 6],
+            raw_visibility_overrides={index: (index + 10, index + 10) for index in range(6)},
+        ),
+        sequence_id="primary:raw-primary-fractal-not-found",
+    )
+    assert result.reason_code == "SEGMENT_PRIMARY_FRACTAL_NOT_FOUND"
     assert result.segment is None
 
 
