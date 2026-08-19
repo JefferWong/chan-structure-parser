@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
+from typing import Optional
 
 from .lifecycle import StructureObject, StrokeDirection
 
@@ -28,6 +29,8 @@ class Segment(StructureObject):
     end_bar_index: int = -1
     confirmation_requirements: list[str] = field(default_factory=list)
     repaint_risk: str = "HIGH"
+    created_at_raw_bar_index: Optional[int] = None
+    confirmed_at_raw_bar_index: Optional[int] = None
 
     def to_dict(self) -> dict:
         return {
