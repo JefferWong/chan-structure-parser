@@ -32,6 +32,10 @@ class MergedBar(StructureObject):
     # 谱系追踪
     source_raw_bar_ids: list[str] = field(default_factory=list)
     # 组成此合并K线的原始K线ID列表
+    source_raw_bar_indices: list[int] = field(default_factory=list)
+    # 原始K线索引，与 source_raw_bar_ids 保持位置一一对应
+    visible_at_raw_bar_index: int = -1
+    # 该合并K线最后一根原始K线变得可见的 raw 轴位置
     merge_direction: str = ""                # 合并时的趋势方向: "UP" / "DOWN"
 
     def to_dict(self) -> dict:

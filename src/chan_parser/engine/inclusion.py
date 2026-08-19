@@ -27,6 +27,13 @@ class InclusionEngine:
         ``initial_direction`` 和 ``index_offset`` 仅用于增量尾部重算；全量调用
         不传这两个参数时保持原有语义。
         """
+        raw_index_by_id: dict[str, int] = {}
+        for bar in raw_bars:
+            if (not isinstance(bar.bar_id, str) or not bar.bar_id
+                    or bar.bar_id in raw_index_by_id
+                    or type(bar.bar_index) is not int):
+                raise ValueError("raw bar identity/index registry is invalid")
+            raw_index_by_id[bar.bar_id] = bar.bar_index
         valid = [b for b in raw_bars if b.is_valid]
         if not valid:
             return [], []
@@ -49,9 +56,23 @@ class InclusionEngine:
 
         merged: list[MergedBar] = []
         events: list[LifecycleEvent] = []
+        claimed_source_ids: set[str] = set()
         for local_idx, bar in enumerate(work):
             global_idx = index_offset + local_idx
             merge_direction = work_directions[local_idx]
+            source_ids = list(bar.source_raw_bar_ids or [bar.bar_id])
+            if not source_ids or len(set(source_ids)) != len(source_ids):
+                raise ValueError("merged bar raw provenance cannot be empty")
+            current_source_ids = set(source_ids)
+            if current_source_ids.intersection(claimed_source_ids):
+                raise ValueError("merged bar raw provenance is not uniquely resolvable")
+            try:
+                source_indices = [raw_index_by_id[source_id] for source_id in source_ids]
+            except (KeyError, TypeError) as exc:
+                raise ValueError("merged bar raw provenance is not uniquely resolvable") from exc
+            if any(type(index) is not int for index in source_indices):
+                raise ValueError("merged bar raw provenance index must be int")
+            claimed_source_ids.update(current_source_ids)
             mb = MergedBar(
                 bar_id=f"mbar_{global_idx + 1:06d}",
                 bar_index=global_idx,
@@ -61,7 +82,9 @@ class InclusionEngine:
                 low=bar.low,
                 close=bar.close,
                 volume=bar.volume,
-                source_raw_bar_ids=list(bar.source_raw_bar_ids or [bar.bar_id]),
+                source_raw_bar_ids=source_ids,
+                source_raw_bar_indices=source_indices,
+                visible_at_raw_bar_index=max(source_indices),
                 merge_direction=merge_direction.value,
                 object_id=f"mbar_{global_idx + 1:06d}_r1",
                 logical_id=f"mbar:idx_{global_idx}",
