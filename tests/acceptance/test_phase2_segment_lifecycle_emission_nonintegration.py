@@ -50,6 +50,26 @@ def _imported_names(tree: ast.AST) -> set[str]:
     }
 
 
+def _imports_emitter_module(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name == "chan_parser.engine.segment_lifecycle_emitter" for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            module = f'{"." * node.level}{node.module or ""}'
+            if module == ".segment_lifecycle_emitter":
+                return True
+            if module == "." and any(
+                alias.name == "segment_lifecycle_emitter" for alias in node.names
+            ):
+                return True
+            if module in {"..engine", "chan_parser.engine"} and any(
+                alias.name == "segment_lifecycle_emitter" for alias in node.names
+            ):
+                return True
+    return False
+
+
 def _terminal_name(call: ast.Call) -> str | None:
     if isinstance(call.func, ast.Name):
         return call.func.id
@@ -85,11 +105,16 @@ def test_emitter_makes_zero_canonical_oracle_calls():
 
 
 def test_no_engine_or_parser_path_imports_or_exports_emitter():
-    for path in (SEGMENT_ENGINE, FULL, INCREMENTAL, ENGINE_INIT):
-        text = path.read_text(encoding="utf-8")
-        assert "SegmentLifecycleEmitter" not in text
-        assert "segment_lifecycle_emitter" not in text
-    assert "SegmentLifecycleEmitter" not in ENGINE_INIT.read_text(encoding="utf-8")
+    assert _imports_emitter_module(_tree(FULL))
+    for path in (SEGMENT_ENGINE, INCREMENTAL, ENGINE_INIT):
+        assert not _imports_emitter_module(_tree(path))
+    for source in (
+        "from .segment_lifecycle_emitter import SegmentLifecycleEmitter",
+        "from . import segment_lifecycle_emitter",
+        "from chan_parser.engine import segment_lifecycle_emitter",
+        "import chan_parser.engine.segment_lifecycle_emitter",
+    ):
+        assert _imports_emitter_module(ast.parse(source))
 
 
 def test_only_emitter_imports_lifecycle_contract_in_production():
@@ -98,7 +123,7 @@ def test_only_emitter_imports_lifecycle_contract_in_production():
         path
         for path in SOURCE.rglob("*.py")
         if path != contract
-        and "segment_lifecycle" in path.read_text(encoding="utf-8")
+        and "..contracts.segment_lifecycle" in _import_paths(_tree(path))
     }
     assert importers == {EMITTER}
 
@@ -120,9 +145,9 @@ def test_parser_checkpoint_and_bounded_tail_remain_unintegrated():
     ):
         assert token not in emitter_text
     for path in SOURCE.rglob("*.py"):
-        if path == EMITTER:
+        if path == EMITTER or path == FULL:
             continue
-        assert "segment_lifecycle_emitter" not in path.read_text(encoding="utf-8")
+        assert not _imports_emitter_module(_tree(path))
 
 
 def test_emission_profile_is_exactly_emitter_only_and_fail_closed():

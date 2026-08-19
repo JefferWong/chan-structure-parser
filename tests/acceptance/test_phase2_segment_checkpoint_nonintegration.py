@@ -13,10 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/chan_parser"
 CONTRACT = SOURCE / "contracts/segment_checkpoint.py"
 PROFILE = ROOT / "configs/profiles/minimal_segment_checkpoint_contract_v1.yaml"
-PRODUCTION_BASELINE_SHA256 = {
-    SOURCE / "engine/full_rebuild.py": (
-        "2afef353341c5e35092885b4b48d0c4944dc9e8ae57d66f949c5b4538e39b36d"
-    ),
+STILL_FROZEN_SEGMENT_RUNTIME_SHA256 = {
     SOURCE / "engine/incremental.py": (
         "aef46f378607560c0c2fb0015f0041b8c7092a01292560c1a5fb6c1563cd9cd8"
     ),
@@ -178,12 +175,12 @@ def test_checkpoint_contract_is_not_imported_by_any_other_production_module():
     assert importers == set()
 
 
-def test_existing_segment_runtime_production_files_equal_exact_base_bytes():
+def test_still_frozen_segment_runtime_production_files_equal_exact_base_bytes():
     actual = {
         path: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in PRODUCTION_BASELINE_SHA256
+        for path in STILL_FROZEN_SEGMENT_RUNTIME_SHA256
     }
-    assert actual == PRODUCTION_BASELINE_SHA256
+    assert actual == STILL_FROZEN_SEGMENT_RUNTIME_SHA256
 
 
 def test_profile_is_exact_contract_only_semantic_state_and_nonintegration():

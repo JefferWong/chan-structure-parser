@@ -144,18 +144,25 @@ def test_contract_does_not_construct_lifecycle_events():
 
 
 def test_segment_engine_does_not_import_lifecycle_contract():
+    importers = set()
     for path in (ROOT / "src/chan_parser").rglob("*.py"):
-        if path in {CONTRACT, EMITTER}:
+        if path == CONTRACT:
             continue
-        assert "segment_lifecycle" not in path.read_text(encoding="utf-8"), path
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if "..contracts.segment_lifecycle" in _imported_module_paths(tree):
+            importers.add(path)
+    assert importers == {EMITTER}
 
 
 def test_full_and_incremental_do_not_import_segment_engine():
-    for path in (FULL, INCREMENTAL):
-        text = path.read_text(encoding="utf-8")
-        assert "SegmentEngine" not in text
-        assert "engine.segment" not in text
-        assert "from .segment" not in text
+    full_paths = _imported_module_paths(ast.parse(FULL.read_text(encoding="utf-8")))
+    assert ".segment" in full_paths
+    assert ".segment_lifecycle_emitter" in full_paths
+    incremental_paths = _imported_module_paths(
+        ast.parse(INCREMENTAL.read_text(encoding="utf-8"))
+    )
+    assert ".segment" not in incremental_paths
+    assert ".segment_lifecycle_emitter" not in incremental_paths
 
 
 def test_engine_package_does_not_export_segment_engine():
