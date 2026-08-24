@@ -7,6 +7,7 @@ canonical rule oracle and may materialize only a complete first-case segment.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 from itertools import pairwise
@@ -102,6 +103,11 @@ class SegmentEngine:
         self._validate_profile(profile)
         self.profile_id = self.PROFILE_ID
         self.profile_version = self.PROFILE_VERSION
+
+    @classmethod
+    def reference_profile(cls) -> dict[str, Any]:
+        """Return an isolated copy of the authoritative engine profile."""
+        return deepcopy(cls._EXPECTED_PROFILE)
 
     @classmethod
     def _validate_profile(cls, profile: Mapping[str, Any]) -> None:

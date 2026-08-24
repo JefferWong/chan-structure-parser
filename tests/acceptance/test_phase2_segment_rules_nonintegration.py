@@ -251,7 +251,7 @@ def test_reference_oracle_exposes_no_production_package_export():
 def test_only_segment_engine_core_may_import_or_call_reference_oracle():
     source_root = ROOT / "src/chan_parser"
     for path in source_root.rglob("*.py"):
-        if path in {ORACLE, SEGMENT_ENGINE, SEGMENT_LIFECYCLE, FULL}:
+        if path in {ORACLE, SEGMENT_ENGINE, SEGMENT_LIFECYCLE}:
             continue
         text = path.read_text(encoding="utf-8")
         assert "segment_rules" not in text, path
@@ -314,6 +314,15 @@ def test_only_segment_engine_core_may_import_or_call_reference_oracle():
     )
     assert "SegmentEngine" not in engine_init
     assert "segment" not in engine_init.lower()
+
+
+def test_full_rebuild_does_not_bypass_oracle_authority_gate():
+    source = FULL.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assert "segment_rules" not in source
+    assert _segment_rules_module_object_imports(tree) == []
+    assert _direct_segment_rules_imports(tree) == []
+    assert _lifecycle_oracle_authority_calls(tree) == []
 
 
 def test_lifecycle_oracle_gate_rejects_module_alias_attribute_call_bypass():

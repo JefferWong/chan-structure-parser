@@ -14,37 +14,6 @@ from .stroke import StrokeEngine
 from .segment import SegmentEngine, SegmentEngineCoreError
 
 
-_SEGMENT_REFERENCE_PROFILE = {
-    "profile_id": "minimal_segment_engine_core_v1",
-    "profile_version": "0.1.0",
-    "status": "ENGINE_CORE_ONLY",
-    "canonical_rules_profile_id": "minimal_segment_canonical_rules_v1",
-    "canonical_rules_profile_version": "1.0.1",
-    "canonical_rules_baseline_commit": "b2c88f38039cfe0ca0f3682e762bc6df3431de1d",
-    "implementation": {
-        "primary_feature_adapter_enabled": True,
-        "first_case_materialization_enabled": True,
-        "second_case_orchestration_enabled": False,
-        "lifecycle_events_enabled": False,
-        "parser_integration_enabled": False,
-        "checkpoint_integration_enabled": False,
-        "full_incremental_integration_enabled": False,
-    },
-    "evidence_binding": {
-        "source_stroke_status": "CONFIRMED",
-        "unseeded_inclusion_policy": "fail_closed",
-        "equal_extremum_endpoint_policy": "earliest_bar_then_endpoint_id",
-    },
-    "prohibited": {
-        "parser_integration": True,
-        "center_or_zhongshu": True,
-        "czsc_or_chanpy": True,
-        "trading_signal": True,
-        "position_or_execution": True,
-    },
-}
-
-
 class FullRebuildEngine:
     def __init__(self, profile: dict, *, segment_reference_enabled: bool = False):
         self.profile = profile
@@ -88,11 +57,12 @@ class FullRebuildEngine:
                       "strokes": [x.to_dict() for x in strokes]}
         if self.segment_reference_enabled:
             structures["segments"] = reference_segments
-        structure_hash = self._structure_hash(merged, fractals, strokes)
-        if self.segment_reference_enabled:
-            structure_hash = self._structure_hash(
-                merged, fractals, strokes, reference_segment_objects
-            )
+        hash_segments = (
+            reference_segment_objects if self.segment_reference_enabled else ()
+        )
+        structure_hash = self._structure_hash(
+            merged, fractals, strokes, hash_segments
+        )
         return {
             "meta": {"symbol": "", "bar_frequency": "", "adjustment": "qfq",
                      "profile_id": self.profile.get("profile_id", "minimal_strict_v1"),
@@ -160,7 +130,7 @@ class FullRebuildEngine:
             return [], []
 
         try:
-            result = SegmentEngine(_SEGMENT_REFERENCE_PROFILE).process_primary(
+            result = SegmentEngine(SegmentEngine.reference_profile()).process_primary(
                 confirmed,
                 sequence_id="full_rebuild:primary",
             )
