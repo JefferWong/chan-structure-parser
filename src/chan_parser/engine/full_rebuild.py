@@ -55,8 +55,20 @@ class FullRebuildEngine:
         self.fractal_engine = FractalEngine(profile.get("fractal", {}))
         self.stroke_engine = StrokeEngine(profile.get("stroke", {}))
         self.engine_version = "0.2.0"
+        self._last_raw_replay_watermark: int | None = None
+        self._raw_replay_segment_confirmations: dict[tuple[str, str], int] = {}
 
-    def process(self, raw_bars: list[RawBar]) -> dict[str, Any]:
+    def process(
+        self,
+        raw_bars: list[RawBar],
+        *,
+        raw_watermark: int | None = None,
+    ) -> dict[str, Any]:
+        self._validate_raw_watermark(raw_watermark)
+        if raw_watermark is not None and not self.segment_reference_enabled:
+            raise SegmentEngineCoreError(
+                "SEGMENT_RAW_REPLAY_REQUIRES_REFERENCE"
+            )
         valid = [b for b in raw_bars if b.is_valid]
         merged, inc_events = self.inclusion_engine.process(valid)
         fractals, fx_events = self.fractal_engine.process(merged, len(raw_bars))
@@ -65,23 +77,11 @@ class FullRebuildEngine:
         reference_segments = []
         reference_segment_objects = []
         if self.segment_reference_enabled:
-            confirmed_strokes = [
-                stroke for stroke in strokes
-                if stroke.status == StructureStatus.CONFIRMED
-            ]
-            if confirmed_strokes:
-                try:
-                    result = SegmentEngine(_SEGMENT_REFERENCE_PROFILE).process_primary(
-                        confirmed_strokes,
-                        sequence_id="full_rebuild:primary",
-                    )
-                except SegmentEngineCoreError:
-                    # Reference evaluation is fail-closed for unsupported source
-                    # evidence; it must not change the Phase 1 rebuild result.
-                    result = None
-                if result is not None and result.completed and result.segment is not None:
-                    reference_segment_objects.append(result.segment)
-                    reference_segments.append(self._reference_segment_dict(result.segment))
+            (reference_segment_objects,
+             reference_segments) = self._reference_segments(
+                strokes,
+                raw_watermark=raw_watermark,
+            )
         quality = self._data_quality(raw_bars)
         structures = {"merged_bars": [x.to_dict() for x in merged],
                       "fractals": [x.to_dict() for x in fractals],
@@ -129,6 +129,101 @@ class FullRebuildEngine:
         payload["created_at_raw_bar_index"] = segment.created_at_raw_bar_index
         payload["confirmed_at_raw_bar_index"] = segment.confirmed_at_raw_bar_index
         return payload
+
+    @staticmethod
+    def _validate_raw_watermark(raw_watermark: int | None) -> None:
+        if raw_watermark is not None and (
+            type(raw_watermark) is not int or raw_watermark < 0
+        ):
+            raise SegmentEngineCoreError(
+                "SEGMENT_RAW_REPLAY_VISIBILITY_INVALID"
+            )
+
+    def _reference_segments(
+        self,
+        strokes,
+        *,
+        raw_watermark: int | None,
+    ) -> tuple[list, list[dict[str, Any]]]:
+        confirmed = [
+            stroke for stroke in strokes
+            if stroke.status == StructureStatus.CONFIRMED
+        ]
+        if raw_watermark is not None:
+            self._validate_raw_replay_strokes(confirmed)
+            confirmed = [
+                stroke for stroke in confirmed
+                if stroke.confirmed_at_raw_bar_index <= raw_watermark
+            ]
+        if not confirmed:
+            self._record_raw_replay_watermark(raw_watermark, ())
+            return [], []
+
+        try:
+            result = SegmentEngine(_SEGMENT_REFERENCE_PROFILE).process_primary(
+                confirmed,
+                sequence_id="full_rebuild:primary",
+            )
+        except SegmentEngineCoreError as error:
+            # Unsupported reference evidence remains a non-materialized tail.
+            if str(error) == "SEGMENT_RAW_REPLAY_VISIBILITY_INVALID":
+                raise
+            self._record_raw_replay_watermark(raw_watermark, ())
+            return [], []
+        if not result.completed or result.segment is None:
+            self._record_raw_replay_watermark(raw_watermark, ())
+            return [], []
+
+        segment = result.segment
+        if raw_watermark is not None:
+            by_stroke_id = {stroke.stroke_id: stroke for stroke in confirmed}
+            source = [by_stroke_id.get(stroke_id) for stroke_id in segment.stroke_ids]
+            if (
+                any(stroke is None for stroke in source)
+                or type(segment.confirmed_at_raw_bar_index) is not int
+                or segment.confirmed_at_raw_bar_index < 0
+                or segment.confirmed_at_raw_bar_index > raw_watermark
+                or segment.confirmed_at_raw_bar_index < max(
+                    stroke.confirmed_at_raw_bar_index for stroke in source
+                )
+            ):
+                raise SegmentEngineCoreError(
+                    "SEGMENT_RAW_REPLAY_VISIBILITY_INVALID"
+                )
+        self._record_raw_replay_watermark(raw_watermark, (segment,))
+        return [segment], [self._reference_segment_dict(segment)]
+
+    @staticmethod
+    def _validate_raw_replay_strokes(strokes) -> None:
+        previous = -1
+        for stroke in strokes:
+            raw_index = stroke.confirmed_at_raw_bar_index
+            if type(raw_index) is not int or raw_index < 0 or raw_index < previous:
+                raise SegmentEngineCoreError(
+                    "SEGMENT_RAW_REPLAY_VISIBILITY_INVALID"
+                )
+            previous = raw_index
+
+    def _record_raw_replay_watermark(self, raw_watermark, segments) -> None:
+        if raw_watermark is None:
+            return
+        if (
+            self._last_raw_replay_watermark is not None
+            and raw_watermark < self._last_raw_replay_watermark
+        ):
+            raise SegmentEngineCoreError(
+                "SEGMENT_RAW_REPLAY_VISIBILITY_INVALID"
+            )
+        for segment in segments:
+            key = (segment.segment_id, segment.logical_id)
+            previous = self._raw_replay_segment_confirmations.get(key)
+            current = segment.confirmed_at_raw_bar_index
+            if previous is not None and current < previous:
+                raise SegmentEngineCoreError(
+                    "SEGMENT_RAW_REPLAY_VISIBILITY_INVALID"
+                )
+            self._raw_replay_segment_confirmations[key] = current
+        self._last_raw_replay_watermark = raw_watermark
 
     @staticmethod
     def _data_quality(bars: list[RawBar]) -> dict:
