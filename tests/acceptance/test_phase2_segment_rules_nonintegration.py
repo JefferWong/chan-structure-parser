@@ -255,8 +255,14 @@ def test_only_segment_engine_core_may_import_or_call_reference_oracle():
             continue
         text = path.read_text(encoding="utf-8")
         assert "segment_rules" not in text, path
-        assert "minimal_segment_canonical_rules_v1" not in text, path
         tree = ast.parse(text)
+        assert _segment_rules_module_object_imports(tree) == [], path
+        assert _direct_segment_rules_imports(tree) == [], path
+        assert _lifecycle_oracle_authority_calls(tree) == [], path
+        # FullRebuild may obtain the isolated reference profile from the
+        # SegmentEngine factory; it may not bind to the oracle itself.
+        if path != FULL:
+            assert "minimal_segment_canonical_rules_v1" not in text, path
         assert not any(
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)

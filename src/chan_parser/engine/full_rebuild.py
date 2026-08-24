@@ -57,11 +57,15 @@ class FullRebuildEngine:
                       "strokes": [x.to_dict() for x in strokes]}
         if self.segment_reference_enabled:
             structures["segments"] = reference_segments
-        hash_segments = (
-            reference_segment_objects if self.segment_reference_enabled else ()
-        )
         structure_hash = self._structure_hash(
-            merged, fractals, strokes, hash_segments
+            merged,
+            fractals,
+            strokes,
+            segments=(
+                reference_segment_objects
+                if self.segment_reference_enabled
+                else ()
+            ),
         )
         return {
             "meta": {"symbol": "", "bar_frequency": "", "adjustment": "qfq",
