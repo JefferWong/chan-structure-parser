@@ -55,6 +55,8 @@ class SegmentEngineResult:
     primary_evidence: PrimaryDestructionEvidence | None = None
     pending_second_case: PendingSecondCaseContext | None = None
     segment: Segment | None = None
+    # Tail state is cleared only by an explicitly completed materialization.
+    completed: bool = False
 
 
 class SegmentEngine:
@@ -225,6 +227,7 @@ class SegmentEngine:
                     standard,
                     primary_evidence=evidence,
                     segment=segment,
+                    completed=True,
                 )
             raise SegmentEngineCoreError(
                 f"unsupported R1 primary destruction case: "

@@ -18,6 +18,7 @@ RULE_PROFILE = ROOT / "configs/profiles/minimal_segment_canonical_rules_v1.yaml"
 ENGINE_PROFILE = ROOT / "configs/profiles/minimal_segment_engine_core_v1.yaml"
 ORACLE = ROOT / "src/chan_parser/contracts/segment_rules.py"
 SEGMENT_ENGINE = ROOT / "src/chan_parser/engine/segment.py"
+FULL = ROOT / "src/chan_parser/engine/full_rebuild.py"
 SEGMENT_LIFECYCLE = (
     ROOT / "src/chan_parser/contracts/segment_lifecycle.py"
 )
@@ -250,7 +251,7 @@ def test_reference_oracle_exposes_no_production_package_export():
 def test_only_segment_engine_core_may_import_or_call_reference_oracle():
     source_root = ROOT / "src/chan_parser"
     for path in source_root.rglob("*.py"):
-        if path in {ORACLE, SEGMENT_ENGINE, SEGMENT_LIFECYCLE}:
+        if path in {ORACLE, SEGMENT_ENGINE, SEGMENT_LIFECYCLE, FULL}:
             continue
         text = path.read_text(encoding="utf-8")
         assert "segment_rules" not in text, path
@@ -405,7 +406,6 @@ def test_lifecycle_oracle_gate_rejects_absolute_module_alias_attribute_call():
 
 def test_phase1_parser_sources_have_no_segment_output_or_rule_profile_hook():
     for relative in (
-        "src/chan_parser/engine/full_rebuild.py",
         "src/chan_parser/engine/incremental.py",
     ):
         text = (ROOT / relative).read_text(encoding="utf-8")

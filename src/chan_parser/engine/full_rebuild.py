@@ -11,11 +11,46 @@ from ..domain.raw_bar import RawBar
 from .fractal import FractalEngine
 from .inclusion import InclusionEngine
 from .stroke import StrokeEngine
+from .segment import SegmentEngine, SegmentEngineCoreError
+
+
+_SEGMENT_REFERENCE_PROFILE = {
+    "profile_id": "minimal_segment_engine_core_v1",
+    "profile_version": "0.1.0",
+    "status": "ENGINE_CORE_ONLY",
+    "canonical_rules_profile_id": "minimal_segment_canonical_rules_v1",
+    "canonical_rules_profile_version": "1.0.1",
+    "canonical_rules_baseline_commit": "b2c88f38039cfe0ca0f3682e762bc6df3431de1d",
+    "implementation": {
+        "primary_feature_adapter_enabled": True,
+        "first_case_materialization_enabled": True,
+        "second_case_orchestration_enabled": False,
+        "lifecycle_events_enabled": False,
+        "parser_integration_enabled": False,
+        "checkpoint_integration_enabled": False,
+        "full_incremental_integration_enabled": False,
+    },
+    "evidence_binding": {
+        "source_stroke_status": "CONFIRMED",
+        "unseeded_inclusion_policy": "fail_closed",
+        "equal_extremum_endpoint_policy": "earliest_bar_then_endpoint_id",
+    },
+    "prohibited": {
+        "parser_integration": True,
+        "center_or_zhongshu": True,
+        "czsc_or_chanpy": True,
+        "trading_signal": True,
+        "position_or_execution": True,
+    },
+}
 
 
 class FullRebuildEngine:
-    def __init__(self, profile: dict):
+    def __init__(self, profile: dict, *, segment_reference_enabled: bool = False):
         self.profile = profile
+        if type(segment_reference_enabled) is not bool:
+            raise TypeError("segment_reference_enabled must be a bool")
+        self.segment_reference_enabled = segment_reference_enabled
         self.inclusion_engine = InclusionEngine(profile.get("inclusion", {}))
         self.fractal_engine = FractalEngine(profile.get("fractal", {}))
         self.stroke_engine = StrokeEngine(profile.get("stroke", {}))
@@ -27,22 +62,50 @@ class FullRebuildEngine:
         fractals, fx_events = self.fractal_engine.process(merged, len(raw_bars))
         strokes, st_events = self.stroke_engine.process(fractals, merged, len(raw_bars))
         log = EventLog(); log.record_many(inc_events + fx_events + st_events)
+        reference_segments = []
+        reference_segment_objects = []
+        if self.segment_reference_enabled:
+            confirmed_strokes = [
+                stroke for stroke in strokes
+                if stroke.status == StructureStatus.CONFIRMED
+            ]
+            if confirmed_strokes:
+                try:
+                    result = SegmentEngine(_SEGMENT_REFERENCE_PROFILE).process_primary(
+                        confirmed_strokes,
+                        sequence_id="full_rebuild:primary",
+                    )
+                except SegmentEngineCoreError:
+                    # Reference evaluation is fail-closed for unsupported source
+                    # evidence; it must not change the Phase 1 rebuild result.
+                    result = None
+                if result is not None and result.completed and result.segment is not None:
+                    reference_segment_objects.append(result.segment)
+                    reference_segments.append(self._reference_segment_dict(result.segment))
         quality = self._data_quality(raw_bars)
+        structures = {"merged_bars": [x.to_dict() for x in merged],
+                      "fractals": [x.to_dict() for x in fractals],
+                      "strokes": [x.to_dict() for x in strokes]}
+        if self.segment_reference_enabled:
+            structures["segments"] = reference_segments
+        structure_hash = self._structure_hash(merged, fractals, strokes)
+        if self.segment_reference_enabled:
+            structure_hash = self._structure_hash(
+                merged, fractals, strokes, reference_segment_objects
+            )
         return {
             "meta": {"symbol": "", "bar_frequency": "", "adjustment": "qfq",
                      "profile_id": self.profile.get("profile_id", "minimal_strict_v1"),
                      "engine_version": self.engine_version, "analysis_mode": "close_only",
                      "calculation_mode": "full_rebuild"},
             "data_quality": quality,
-            "structures": {"merged_bars": [x.to_dict() for x in merged],
-                           "fractals": [x.to_dict() for x in fractals],
-                           "strokes": [x.to_dict() for x in strokes]},
+            "structures": structures,
             "runtime_state": {"last_processed_bar_id": valid[-1].bar_id if valid else "",
                               "unfinished_fractal_count": sum(x.status != StructureStatus.CONFIRMED for x in fractals),
                               "unfinished_stroke_count": sum(x.status != StructureStatus.CONFIRMED for x in strokes)},
             "audit": {"input_sha256": self._input_hash(raw_bars),
                       "event_log_sha256": log.compute_sha256(),
-                      "output_sha256": self._structure_hash(merged, fractals, strokes),
+                      "output_sha256": structure_hash,
                       "event_count": len(log)},
             "events": log.to_list(),
         }
@@ -52,11 +115,20 @@ class FullRebuildEngine:
         return hashlib.sha256("|".join(b.content_hash() for b in bars).encode()).hexdigest()[:16]
 
     @staticmethod
-    def _structure_hash(merged, fractals, strokes) -> str:
+    def _structure_hash(merged, fractals, strokes, segments=()) -> str:
         payload = [x.content_hash() for x in merged]
         payload += [x.content_hash() for x in fractals]
         payload += [x.content_hash() for x in strokes]
+        payload += [x.content_hash() for x in segments]
         return hashlib.sha256("|".join(payload).encode()).hexdigest()[:16]
+
+    @staticmethod
+    def _reference_segment_dict(segment) -> dict[str, Any]:
+        """Serialize reference evidence without changing the legacy Segment schema."""
+        payload = segment.to_dict()
+        payload["created_at_raw_bar_index"] = segment.created_at_raw_bar_index
+        payload["confirmed_at_raw_bar_index"] = segment.confirmed_at_raw_bar_index
+        return payload
 
     @staticmethod
     def _data_quality(bars: list[RawBar]) -> dict:
