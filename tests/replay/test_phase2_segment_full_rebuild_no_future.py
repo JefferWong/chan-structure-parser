@@ -1,17 +1,66 @@
 """PR11 Phase 2 raw replay and no-future contract."""
+from __future__ import annotations
+
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import yaml
 
+from chan_parser.domain.lifecycle import StructureStatus, StrokeDirection
+from chan_parser.domain.stroke import Stroke
 from chan_parser.engine.full_rebuild import FullRebuildEngine
-from chan_parser.engine.segment import SegmentEngineCoreError
-from tests.unit.test_segment_engine import engine as segment_engine
-from tests.unit.test_segment_engine import make_strokes
+from chan_parser.engine.segment import SegmentEngine, SegmentEngineCoreError
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PROFILE = ROOT / "configs/profiles/minimal_segment_engine_core_v1.yaml"
+
+
+def make_strokes(
+    points: list[float],
+    *,
+    visibility_overrides: dict[int, int] | None = None,
+    raw_visibility_overrides: dict[int, tuple[int, int]] | None = None,
+) -> list[Stroke]:
+    visibility_overrides = visibility_overrides or {}
+    raw_visibility_overrides = raw_visibility_overrides or {}
+    strokes: list[Stroke] = []
+    for index, (start, end) in enumerate(zip(points, points[1:])):
+        direction = StrokeDirection.UP if start < end else StrokeDirection.DOWN
+        confirmed_at = visibility_overrides.get(index, index + 1)
+        raw_created, raw_confirmed = raw_visibility_overrides.get(index, (None, None))
+        strokes.append(Stroke(
+            object_id=f"stroke_{index:06d}_r1",
+            logical_id=f"stroke:{index}",
+            revision=1,
+            status=StructureStatus.CONFIRMED,
+            created_at_bar=index + 1,
+            confirmed_at_bar=confirmed_at,
+            rule_profile="minimal_strict_v1",
+            rule_version="1.0.0",
+            stroke_id=f"stroke_{index:06d}",
+            direction=direction,
+            start_fractal_id=f"fx:{index}",
+            end_fractal_id=f"fx:{index + 1}",
+            start_price=start,
+            end_price=end,
+            start_bar_index=index,
+            end_bar_index=index + 1,
+            merged_bar_count=2,
+            max_price=max(start, end),
+            min_price=min(start, end),
+            price_range=abs(end - start),
+            confirmation_requirements=[],
+            repaint_risk="NONE",
+            created_at_raw_bar_index=raw_created,
+            confirmed_at_raw_bar_index=raw_confirmed,
+        ))
+    return strokes
+
+
+def segment_engine() -> SegmentEngine:
+    return SegmentEngine(yaml.safe_load(PROFILE.read_text(encoding="utf-8")))
 
 
 def phase1_profile():
