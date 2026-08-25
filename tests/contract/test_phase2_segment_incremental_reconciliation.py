@@ -7,6 +7,7 @@ import pytest
 
 from chan_parser.contracts.segment_incremental_reconciliation import (
     SegmentIncrementalReconciliationAction,
+    SegmentIncrementalReconciliationDecision,
     SegmentIncrementalReconciliationError,
     reconcile_incremental_segment,
 )
@@ -194,6 +195,24 @@ def test_malformed_previous_fails_closed(previous):
 
 
 @pytest.mark.parametrize(
+    "previous",
+    [
+        replace(segment(), revision=-1),
+        replace(segment(), revision=1.0),
+        replace(segment(), segment_id=""),
+        replace(segment(), replaced_by="replacement-object"),
+        replace(segment(), invalidated_at_bar=10),
+    ],
+)
+def test_additional_malformed_previous_states_fail_closed(previous):
+    with pytest.raises(SegmentIncrementalReconciliationError) as raised:
+        reconcile_incremental_segment(
+            previous=previous, current=first_case(), source_strokes=strokes()
+        )
+    assert raised.value.reason_code.startswith("SEGMENT_RECONCILIATION_PREVIOUS_")
+
+
+@pytest.mark.parametrize(
     "current",
     [
         first_case(segment=None, completed=False),
@@ -215,6 +234,38 @@ def test_contradictory_current_result_fails_closed(current):
         )
 
 
+def test_current_requires_exact_result_type_and_direction_type():
+    with pytest.raises(SegmentIncrementalReconciliationError) as fake_error:
+        reconcile_incremental_segment(
+            previous=None,
+            current=object(),
+            source_strokes=strokes(),
+        )
+    assert fake_error.value.reason_code == "SEGMENT_RECONCILIATION_CURRENT_TYPE_INVALID"
+
+    wrong_direction = replace(first_case(), candidate_direction="UP")
+    with pytest.raises(SegmentIncrementalReconciliationError) as direction_error:
+        reconcile_incremental_segment(
+            previous=None,
+            current=wrong_direction,
+            source_strokes=strokes(),
+        )
+    assert direction_error.value.reason_code == (
+        "SEGMENT_RECONCILIATION_CANDIDATE_DIRECTION_INVALID"
+    )
+
+
+def test_first_case_candidate_direction_must_match_result():
+    current = replace(first_case(), candidate_direction=StrokeDirection.DOWN)
+    with pytest.raises(SegmentIncrementalReconciliationError) as raised:
+        reconcile_incremental_segment(
+            previous=None, current=current, source_strokes=strokes()
+        )
+    assert raised.value.reason_code == (
+        "SEGMENT_RECONCILIATION_CANDIDATE_DIRECTION_MISMATCH"
+    )
+
+
 def test_candidate_source_must_be_exact_nonempty_ordered_prefix():
     candidate = segment()
     candidate.stroke_ids = ["stroke_000002", "stroke_000001"]
@@ -225,6 +276,133 @@ def test_candidate_source_must_be_exact_nonempty_ordered_prefix():
     assert raised.value.reason_code == (
         "SEGMENT_RECONCILIATION_CANDIDATE_SOURCE_BINDING_INVALID"
     )
+
+
+def test_source_binding_accepts_prefix_with_unrelated_confirmed_tail():
+    decision = reconcile_incremental_segment(
+        previous=None, current=first_case(), source_strokes=strokes(5)
+    )
+    assert decision.action is SegmentIncrementalReconciliationAction.NO_PREVIOUS
+
+
+@pytest.mark.parametrize(
+    "source_factory",
+    [
+        lambda: (),
+        lambda: (object(),),
+        lambda: (replace(strokes()[0], status=StructureStatus.PROVISIONAL),),
+        lambda: strokes()[:1] + (replace(strokes()[1], stroke_id="stroke_000001"),) + strokes()[2:],
+        lambda: strokes()[:1] + (replace(strokes()[1], logical_id="stroke:logical:0"),) + strokes()[2:],
+        lambda: strokes()[:1] + (replace(strokes()[1], object_id="stroke-object-0"),) + strokes()[2:],
+    ],
+)
+def test_malformed_source_evidence_fails_closed(source_factory):
+    with pytest.raises(SegmentIncrementalReconciliationError):
+        reconcile_incremental_segment(
+            previous=None, current=first_case(), source_strokes=source_factory()
+        )
+
+
+@pytest.mark.parametrize(
+    "candidate_ids",
+    [
+        ["stroke_000001", "stroke_000003"],
+        ["stroke_000002", "stroke_000001", "stroke_000003"],
+        ["stroke_000003", "stroke_000004", "stroke_000005"],
+        ["stroke_999999"],
+        [f"stroke_{index + 1:06d}" for index in range(6)],
+        [],
+    ],
+)
+def test_candidate_source_binding_rejects_nonprefix_shapes(candidate_ids):
+    candidate = segment()
+    candidate.stroke_ids = candidate_ids
+    with pytest.raises(SegmentIncrementalReconciliationError) as raised:
+        reconcile_incremental_segment(
+            previous=None, current=first_case(candidate), source_strokes=strokes()
+        )
+    assert raised.value.reason_code == (
+        "SEGMENT_RECONCILIATION_CANDIDATE_SOURCE_BINDING_INVALID"
+    )
+
+
+def test_segment_content_hash_method_is_authoritative(monkeypatch):
+    previous = replace(segment(), object_id="previous-r8", revision=8, end_price=1.0)
+    candidate = replace(segment(), object_id="fresh-r1", end_price=99.0)
+    calls = []
+
+    def controlled_hash(value):
+        calls.append(value.object_id)
+        return "controlled-equal-hash"
+
+    monkeypatch.setattr(Segment, "content_hash", controlled_hash)
+    reuse = reconcile_incremental_segment(
+        previous=previous, current=first_case(candidate), source_strokes=strokes()
+    )
+    assert reuse.action is SegmentIncrementalReconciliationAction.REUSE
+    assert calls.count("previous-r8") == 2
+    assert calls.count("fresh-r1") == 2
+
+
+def decision_fields(**overrides):
+    values = {
+        "action": SegmentIncrementalReconciliationAction.REUSE,
+        "reason_code": "SEGMENT_RECONCILIATION_IDENTITY_REUSED",
+        "previous_logical_id": "logical",
+        "previous_object_id": "object-r3",
+        "previous_revision": 3,
+        "previous_content_hash": "same-hash",
+        "candidate_logical_id": "logical",
+        "candidate_content_hash": "same-hash",
+        "next_revision": 3,
+    }
+    values.update(overrides)
+    return values
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"action": "REUSE"},
+        {"action": "anything"},
+        {"candidate_logical_id": "other"},
+        {"candidate_content_hash": "different"},
+        {"next_revision": 4},
+        {"previous_revision": True},
+    ],
+)
+def test_decision_rejects_unknown_action_type_and_reuse_contradictions(overrides):
+    with pytest.raises(SegmentIncrementalReconciliationError):
+        SegmentIncrementalReconciliationDecision(**decision_fields(**overrides))
+
+
+def test_decision_enforces_revise_replace_and_no_previous_invariants():
+    with pytest.raises(SegmentIncrementalReconciliationError):
+        SegmentIncrementalReconciliationDecision(
+            **decision_fields(
+                action=SegmentIncrementalReconciliationAction.REVISE,
+                reason_code="SEGMENT_RECONCILIATION_CONTENT_CHANGED",
+                candidate_content_hash="different",
+                next_revision=3,
+            )
+        )
+    with pytest.raises(SegmentIncrementalReconciliationError):
+        SegmentIncrementalReconciliationDecision(
+            **decision_fields(
+                action=SegmentIncrementalReconciliationAction.REPLACE_REQUIRED,
+                reason_code="SEGMENT_RECONCILIATION_LOGICAL_ID_CHANGED",
+                candidate_logical_id="logical",
+                next_revision=None,
+            )
+        )
+    with pytest.raises(SegmentIncrementalReconciliationError):
+        SegmentIncrementalReconciliationDecision(
+            **decision_fields(
+                action=SegmentIncrementalReconciliationAction.NO_PREVIOUS,
+                reason_code="SEGMENT_RECONCILIATION_NO_PREVIOUS_NONMATERIALIZED",
+                next_revision=None,
+            )
+        )
 
 
 def test_repeated_deepcopied_semantically_equal_inputs_are_deterministic_and_pure():
@@ -244,3 +422,56 @@ def test_repeated_deepcopied_semantically_equal_inputs_are_deterministic_and_pur
 
     assert first == second
     assert (previous, current, source) == before
+
+
+@pytest.mark.parametrize(
+    "previous,current",
+    [
+        (segment(), first_case()),
+        (segment(), first_case(segment(end_price=8.0))),
+        (segment(), first_case(segment(logical_id="segment:logical:other"))),
+        (None, nonmaterialized("SEGMENT_FEATURE_WINDOW_INCOMPLETE")),
+    ],
+)
+def test_every_success_action_is_pure(previous, current):
+    source = strokes()
+    before = deepcopy((previous, current, source))
+    reconcile_incremental_segment(
+        previous=previous, current=current, source_strokes=source
+    )
+    assert (previous, current, source) == before
+
+
+def test_fail_closed_path_is_pure():
+    previous = segment()
+    current = nonmaterialized("SEGMENT_SECOND_CASE_PENDING")
+    source = strokes()
+    previous_before = deepcopy(previous)
+    source_before = deepcopy(source)
+    current_before = (
+        current.reason_code,
+        current.candidate_direction,
+        current.feature_elements,
+        current.primary_evidence,
+        current.pending_second_case,
+        current.segment,
+        current.completed,
+    )
+    with pytest.raises(SegmentIncrementalReconciliationError) as raised:
+        reconcile_incremental_segment(
+            previous=previous, current=current, source_strokes=source
+        )
+    assert raised.value.reason_code == (
+        "SEGMENT_RECONCILIATION_PREVIOUS_WITH_NONMATERIALIZED_CURRENT_UNSUPPORTED"
+    )
+    assert previous == previous_before
+    assert source == source_before
+    assert (
+        current.reason_code,
+        current.candidate_direction,
+        current.feature_elements,
+        current.primary_evidence,
+        current.pending_second_case,
+        current.segment,
+        current.completed,
+    ) == current_before

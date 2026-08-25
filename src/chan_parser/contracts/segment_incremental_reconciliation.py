@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
-from ..domain.lifecycle import StructureStatus
+from ..domain.lifecycle import StructureStatus, StrokeDirection
 from ..domain.segment import Segment
 from ..domain.stroke import Stroke
 from ..engine.segment import SegmentEngineResult
@@ -55,6 +55,75 @@ class SegmentIncrementalReconciliationDecision:
     candidate_logical_id: str | None
     candidate_content_hash: str | None
     next_revision: int | None
+
+    def __post_init__(self) -> None:
+        if type(self.action) is not SegmentIncrementalReconciliationAction:
+            raise SegmentIncrementalReconciliationError(
+                "SEGMENT_RECONCILIATION_DECISION_ACTION_INVALID"
+            )
+        previous = (
+            self.previous_logical_id,
+            self.previous_object_id,
+            self.previous_revision,
+            self.previous_content_hash,
+        )
+        candidate = (self.candidate_logical_id, self.candidate_content_hash)
+        if self.action is SegmentIncrementalReconciliationAction.NO_PREVIOUS:
+            if previous != (None, None, None, None) or self.next_revision is not None:
+                raise SegmentIncrementalReconciliationError(
+                    "SEGMENT_RECONCILIATION_NO_PREVIOUS_DECISION_INVALID"
+                )
+            expected_candidate = {
+                "SEGMENT_RECONCILIATION_NO_PREVIOUS_NONMATERIALIZED": (
+                    None,
+                    None,
+                ),
+                "SEGMENT_RECONCILIATION_NO_PREVIOUS_FIRST_CASE": candidate,
+            }
+            expected = expected_candidate.get(self.reason_code)
+            if (
+                expected is None
+                or candidate != expected
+                or (
+                    self.reason_code == "SEGMENT_RECONCILIATION_NO_PREVIOUS_FIRST_CASE"
+                    and not _valid_text_pair(candidate)
+                )
+            ):
+                raise SegmentIncrementalReconciliationError(
+                    "SEGMENT_RECONCILIATION_NO_PREVIOUS_DECISION_INVALID"
+                )
+            return
+
+        if not _valid_previous_decision_fields(previous) or not _valid_text_pair(
+            candidate
+        ):
+            raise SegmentIncrementalReconciliationError(
+                "SEGMENT_RECONCILIATION_DECISION_IDENTITY_INVALID"
+            )
+        if self.action is SegmentIncrementalReconciliationAction.REUSE:
+            valid = (
+                self.reason_code == "SEGMENT_RECONCILIATION_IDENTITY_REUSED"
+                and self.previous_logical_id == self.candidate_logical_id
+                and self.previous_content_hash == self.candidate_content_hash
+                and self.next_revision == self.previous_revision
+            )
+        elif self.action is SegmentIncrementalReconciliationAction.REVISE:
+            valid = (
+                self.reason_code == "SEGMENT_RECONCILIATION_CONTENT_CHANGED"
+                and self.previous_logical_id == self.candidate_logical_id
+                and self.previous_content_hash != self.candidate_content_hash
+                and self.next_revision == self.previous_revision + 1
+            )
+        else:
+            valid = (
+                self.reason_code == "SEGMENT_RECONCILIATION_LOGICAL_ID_CHANGED"
+                and self.previous_logical_id != self.candidate_logical_id
+                and self.next_revision is None
+            )
+        if not valid:
+            raise SegmentIncrementalReconciliationError(
+                "SEGMENT_RECONCILIATION_DECISION_INVARIANT_INVALID"
+            )
 
 
 _FIRST_CASE = "SEGMENT_FIRST_CASE_CONFIRMED"
@@ -159,6 +228,10 @@ def _validate_previous(previous: Segment | None) -> str | None:
         raise SegmentIncrementalReconciliationError(
             "SEGMENT_RECONCILIATION_PREVIOUS_STATUS_INVALID"
         )
+    if previous.invalidated_at_bar is not None or previous.replaced_by is not None:
+        raise SegmentIncrementalReconciliationError(
+            "SEGMENT_RECONCILIATION_PREVIOUS_LIFECYCLE_STATE_INVALID"
+        )
     _validate_identity(
         previous,
         prefix="SEGMENT_RECONCILIATION_PREVIOUS",
@@ -176,6 +249,10 @@ def _validate_current(
         raise SegmentIncrementalReconciliationError(
             "SEGMENT_RECONCILIATION_CURRENT_TYPE_INVALID"
         )
+    if type(current.candidate_direction) is not StrokeDirection:
+        raise SegmentIncrementalReconciliationError(
+            "SEGMENT_RECONCILIATION_CANDIDATE_DIRECTION_INVALID"
+        )
     if current.reason_code == _FIRST_CASE:
         if (
             type(current.segment) is not Segment
@@ -189,6 +266,10 @@ def _validate_current(
         if candidate.status is not StructureStatus.CONFIRMED:
             raise SegmentIncrementalReconciliationError(
                 "SEGMENT_RECONCILIATION_CANDIDATE_STATUS_INVALID"
+            )
+        if candidate.direction is not current.candidate_direction:
+            raise SegmentIncrementalReconciliationError(
+                "SEGMENT_RECONCILIATION_CANDIDATE_DIRECTION_MISMATCH"
             )
         _validate_identity(
             candidate,
@@ -291,10 +372,32 @@ def _validate_identity(segment: Segment, *, prefix: str) -> None:
         or not segment.logical_id
         or type(segment.object_id) is not str
         or not segment.object_id
+        or type(segment.segment_id) is not str
+        or not segment.segment_id
         or type(segment.revision) is not int
         or segment.revision < 1
     ):
         raise SegmentIncrementalReconciliationError(f"{prefix}_IDENTITY_INVALID")
+
+
+def _valid_text_pair(values: tuple[str | None, str | None]) -> bool:
+    return all(type(value) is str and bool(value) for value in values)
+
+
+def _valid_previous_decision_fields(
+    values: tuple[str | None, str | None, int | None, str | None],
+) -> bool:
+    logical_id, object_id, revision, content_hash = values
+    return (
+        type(logical_id) is str
+        and bool(logical_id)
+        and type(object_id) is str
+        and bool(object_id)
+        and type(revision) is int
+        and revision >= 1
+        and type(content_hash) is str
+        and bool(content_hash)
+    )
 
 
 def _stable_content_hash(record: Segment | Stroke, reason_code: str) -> str:

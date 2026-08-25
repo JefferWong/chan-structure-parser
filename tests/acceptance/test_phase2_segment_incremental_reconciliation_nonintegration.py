@@ -47,6 +47,19 @@ def _terminal_calls(tree: ast.AST) -> set[str]:
     return calls
 
 
+def _assigned_names(tree: ast.AST) -> set[str]:
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+                elif isinstance(target, ast.Attribute):
+                    names.add(target.attr)
+    return names
+
+
 def test_contract_has_only_existing_record_authority_dependencies():
     imports = _import_paths(_tree(CONTRACT))
     assert imports == {
@@ -76,10 +89,18 @@ def test_contract_does_not_construct_segments_or_duplicate_identity_algorithms()
     calls = _terminal_calls(tree)
     assert "Segment" not in calls
     text = CONTRACT.read_text(encoding="utf-8")
-    assert "segment_id" not in text
-    assert "logical_id =" not in text
+    assert not {"segment_id", "logical_id", "object_id"}.intersection(
+        _assigned_names(tree)
+    )
     assert "hashlib" not in text
     assert ".content_hash()" in text
+    string_literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    for identity_literal in ("segment:", "_r1", "_r2", "sha256"):
+        assert not any(identity_literal in value for value in string_literals)
 
 
 def test_runtime_checkpoint_and_parser_sources_do_not_import_contract():
