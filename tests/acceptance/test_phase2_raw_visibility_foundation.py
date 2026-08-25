@@ -16,7 +16,6 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/chan_parser"
 BASELINE = {
     SOURCE / "engine/incremental.py": "aef46f378607560c0c2fb0015f0041b8c7092a01292560c1a5fb6c1563cd9cd8",
-    SOURCE / "engine/segment_lifecycle_emitter.py": "5049668739f6b71633e083d5ba14145964c536dd1e20e879e3ad7c4e39497f73",
     SOURCE / "contracts/segment_checkpoint.py": "2079d159ef134a032d4d45c04d580797491e08c5ce01ca827107776297ad5880",
 }
 

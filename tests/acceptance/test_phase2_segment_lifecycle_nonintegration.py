@@ -145,7 +145,7 @@ def test_contract_does_not_construct_lifecycle_events():
 
 def test_segment_engine_does_not_import_lifecycle_contract():
     for path in (ROOT / "src/chan_parser").rglob("*.py"):
-        if path in {CONTRACT, EMITTER}:
+        if path in {CONTRACT, EMITTER, ROOT / "src/chan_parser/engine/full_rebuild.py"}:
             continue
         assert "segment_lifecycle" not in path.read_text(encoding="utf-8"), path
 

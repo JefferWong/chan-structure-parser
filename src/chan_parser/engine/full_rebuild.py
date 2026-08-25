@@ -12,6 +12,7 @@ from .fractal import FractalEngine
 from .inclusion import InclusionEngine
 from .stroke import StrokeEngine
 from .segment import SegmentEngine, SegmentEngineCoreError
+from .segment_lifecycle_emitter import SegmentLifecycleEmitter
 
 
 _INCOMPLETE_REFERENCE_TAIL_REASONS = frozenset({
@@ -20,11 +21,24 @@ _INCOMPLETE_REFERENCE_TAIL_REASONS = frozenset({
 
 
 class FullRebuildEngine:
-    def __init__(self, profile: dict, *, segment_reference_enabled: bool = False):
+    def __init__(
+        self,
+        profile: dict,
+        *,
+        segment_reference_enabled: bool = False,
+        segment_lifecycle_emission_enabled: bool = False,
+    ):
         self.profile = profile
         if type(segment_reference_enabled) is not bool:
             raise TypeError("segment_reference_enabled must be a bool")
+        if type(segment_lifecycle_emission_enabled) is not bool:
+            raise TypeError("segment_lifecycle_emission_enabled must be a bool")
+        if segment_lifecycle_emission_enabled and not segment_reference_enabled:
+            raise SegmentEngineCoreError(
+                "SEGMENT_LIFECYCLE_REQUIRES_REFERENCE"
+            )
         self.segment_reference_enabled = segment_reference_enabled
+        self.segment_lifecycle_emission_enabled = segment_lifecycle_emission_enabled
         self.inclusion_engine = InclusionEngine(profile.get("inclusion", {}))
         self.fractal_engine = FractalEngine(profile.get("fractal", {}))
         self.stroke_engine = StrokeEngine(profile.get("stroke", {}))
@@ -43,6 +57,10 @@ class FullRebuildEngine:
             raise SegmentEngineCoreError(
                 "SEGMENT_RAW_REPLAY_REQUIRES_REFERENCE"
             )
+        if self.segment_lifecycle_emission_enabled and raw_watermark is not None:
+            raise SegmentEngineCoreError(
+                "SEGMENT_LIFECYCLE_RAW_REPLAY_NOT_INTEGRATED"
+            )
         valid = [b for b in raw_bars if b.is_valid]
         merged, inc_events = self.inclusion_engine.process(valid)
         fractals, fx_events = self.fractal_engine.process(merged, len(raw_bars))
@@ -51,11 +69,30 @@ class FullRebuildEngine:
         log.record_many(inc_events + fx_events + st_events)
         reference_segments = []
         reference_segment_objects = []
+        reference_result = None
+        reference_source = ()
         if self.segment_reference_enabled:
-            (reference_segment_objects,
-             reference_segments) = self._reference_segments(
+            reference_data = self._reference_segments(
                 strokes,
                 raw_watermark=raw_watermark,
+                include_result=self.segment_lifecycle_emission_enabled,
+            )
+            if self.segment_lifecycle_emission_enabled:
+                (
+                    reference_segment_objects,
+                    reference_segments,
+                    reference_result,
+                    reference_source,
+                ) = reference_data
+            else:
+                reference_segment_objects, reference_segments = reference_data
+        if self.segment_lifecycle_emission_enabled and reference_result is not None:
+            SegmentLifecycleEmitter(
+                SegmentLifecycleEmitter.reference_profile()
+            ).emit(
+                result=reference_result,
+                source_strokes=reference_source,
+                event_log=log,
             )
         quality = self._data_quality(raw_bars)
         structures = {"merged_bars": [x.to_dict() for x in merged],
@@ -124,7 +161,19 @@ class FullRebuildEngine:
         strokes,
         *,
         raw_watermark: int | None,
-    ) -> tuple[list, list[dict[str, Any]]]:
+        include_result: bool = False,
+    ):
+        result = self._reference_evaluation(strokes, raw_watermark=raw_watermark)
+        if include_result:
+            return result
+        return result[:2]
+
+    def _reference_evaluation(
+        self,
+        strokes,
+        *,
+        raw_watermark: int | None,
+    ) -> tuple[list, list[dict[str, Any]], Any, tuple]:
         confirmed = [
             stroke for stroke in strokes
             if stroke.status == StructureStatus.CONFIRMED
@@ -137,7 +186,7 @@ class FullRebuildEngine:
             ]
         if not confirmed:
             self._record_raw_replay_watermark(raw_watermark, ())
-            return [], []
+            return [], [], None, ()
 
         try:
             result = SegmentEngine(SegmentEngine.reference_profile()).process_primary(
@@ -149,10 +198,10 @@ class FullRebuildEngine:
             if error.reason_code not in _INCOMPLETE_REFERENCE_TAIL_REASONS:
                 raise
             self._record_raw_replay_watermark(raw_watermark, ())
-            return [], []
+            return [], [], None, ()
         if not result.completed or result.segment is None:
             self._record_raw_replay_watermark(raw_watermark, ())
-            return [], []
+            return [], [], result, tuple(confirmed)
 
         segment = result.segment
         if raw_watermark is not None:
@@ -171,7 +220,7 @@ class FullRebuildEngine:
                     "SEGMENT_RAW_REPLAY_VISIBILITY_INVALID"
                 )
         self._record_raw_replay_watermark(raw_watermark, (segment,))
-        return [segment], [self._reference_segment_dict(segment)]
+        return [segment], [self._reference_segment_dict(segment)], result, tuple(confirmed)
 
     @staticmethod
     def _validate_raw_replay_strokes(strokes) -> None:
