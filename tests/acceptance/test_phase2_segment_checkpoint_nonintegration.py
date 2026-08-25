@@ -15,7 +15,7 @@ CONTRACT = SOURCE / "contracts/segment_checkpoint.py"
 PROFILE = ROOT / "configs/profiles/minimal_segment_checkpoint_contract_v1.yaml"
 PRODUCTION_BASELINE_SHA256 = {
     SOURCE / "engine/incremental.py": (
-        "aef46f378607560c0c2fb0015f0041b8c7092a01292560c1a5fb6c1563cd9cd8"
+        "6914818caf30de11be6445a89ec509ceebf4af7b5675e26098a00e728d36e847"
     ),
 }
 ALLOWED_IMPORTS = {

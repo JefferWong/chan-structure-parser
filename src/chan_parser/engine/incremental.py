@@ -13,6 +13,7 @@ from ..domain.lifecycle import EventType, LifecycleEvent, StructureStatus, Trend
 from ..domain.raw_bar import RawBar
 from .fractal import FractalEngine
 from .inclusion import InclusionEngine
+from .segment import SegmentEngine, SegmentEngineResult
 from .stroke import StrokeEngine
 
 
@@ -37,8 +38,11 @@ class Checkpoint:
 
 
 class IncrementalEngine:
-    def __init__(self, profile: dict):
+    def __init__(self, profile: dict, *, segment_reference_enabled: bool = False):
         self.profile = profile
+        if type(segment_reference_enabled) is not bool:
+            raise TypeError("segment_reference_enabled must be a bool")
+        self.segment_reference_enabled = segment_reference_enabled
         self.inclusion_engine = InclusionEngine(profile.get("inclusion", {}))
         self.fractal_engine = FractalEngine(profile.get("fractal", {}))
         self.stroke_engine = StrokeEngine(profile.get("stroke", {}))
@@ -65,6 +69,8 @@ class IncrementalEngine:
         }
         self._last_engine_inputs = self._empty_engine_metrics()
         self._max_engine_inputs = self._empty_engine_metrics()
+        self._segment_reference_result: SegmentEngineResult | None = None
+        self._segment_reference_source_strokes = ()
 
     def append_one(self, raw_bar: RawBar) -> dict[str, Any]:
         return self.append_batch([raw_bar])
@@ -80,6 +86,8 @@ class IncrementalEngine:
         else:
             self._bounded_reconcile(combined, len(new_bars))
 
+        if self.segment_reference_enabled:
+            self._evaluate_segment_reference()
         self._store_historical_snapshot(len(self._raw_bars), self._snapshot_payload())
         if self.checkpoint_interval and len(self._raw_bars) % self.checkpoint_interval == 0:
             self.create_checkpoint()
@@ -340,6 +348,14 @@ class IncrementalEngine:
 
     def get_current_state(self) -> dict[str, Any]:
         snapshot = self._snapshot_payload()
+        audit = {
+            "event_log_sha256": self._event_log.compute_sha256(),
+            "output_sha256": snapshot["output_sha256"],
+            "event_count": len(self._event_log),
+            "historical_snapshot_count": len(self._historical_snapshots),
+        }
+        if self.segment_reference_enabled:
+            audit["segment_reference"] = self.get_segment_reference_result()
         return {
             "meta": {
                 "symbol": "",
@@ -373,13 +389,47 @@ class IncrementalEngine:
                     x.status != StructureStatus.CONFIRMED for x in self._strokes
                 ),
             },
-            "audit": {
-                "event_log_sha256": self._event_log.compute_sha256(),
-                "output_sha256": snapshot["output_sha256"],
-                "event_count": len(self._event_log),
-                "historical_snapshot_count": len(self._historical_snapshots),
-            },
+            "audit": audit,
             "events": self._event_log.to_list(),
+        }
+
+    def _evaluate_segment_reference(self) -> None:
+        source = tuple(
+            stroke
+            for stroke in self._strokes
+            if stroke.status == StructureStatus.CONFIRMED
+        )
+        self._segment_reference_source_strokes = source
+        if not source:
+            self._segment_reference_result = None
+            return
+        self._segment_reference_result = SegmentEngine(
+            SegmentEngine.reference_profile()
+        ).process_primary(source, sequence_id="incremental:primary")
+
+    def get_segment_reference_result(self) -> dict[str, Any] | None:
+        """Return opt-in Segment reference evidence without making it output authority."""
+        if not self.segment_reference_enabled:
+            return None
+        result = self._segment_reference_result
+        if result is None:
+            return {
+                "reason_code": None,
+                "completed": False,
+                "segment": None,
+                "pending_second_case": False,
+                "source_stroke_ids": [
+                    stroke.stroke_id for stroke in self._segment_reference_source_strokes
+                ],
+            }
+        return {
+            "reason_code": result.reason_code,
+            "completed": result.completed,
+            "segment": result.segment.to_dict() if result.segment is not None else None,
+            "pending_second_case": result.pending_second_case is not None,
+            "source_stroke_ids": [
+                stroke.stroke_id for stroke in self._segment_reference_source_strokes
+            ],
         }
 
     def _data_quality(self) -> dict:
