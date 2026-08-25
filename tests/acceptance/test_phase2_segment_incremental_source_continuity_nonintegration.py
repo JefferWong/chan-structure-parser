@@ -64,6 +64,8 @@ def test_contract_has_no_second_authority_or_runtime_calls():
         "SegmentLifecycleEmitter",
         "segment_checkpoint",
         "RETAIN_PREVIOUS",
+        "PRESERVE_PREVIOUS_SEGMENT",
+        "KEEP",
         "INVALIDATE_PREVIOUS",
         "REVISE",
         "REPLACE",
@@ -80,6 +82,7 @@ def test_contract_has_no_second_authority_or_runtime_calls():
         for name in imports
     )
     assert "content_hash" in calls
+    assert not {"Segment", "Stroke", "replace"}.intersection(calls)
     assert not {"process_primary", "append_batch", "record", "emit", "restore"}.intersection(calls)
 
 

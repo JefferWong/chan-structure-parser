@@ -67,7 +67,7 @@ class SegmentIncrementalSourceContinuityDecision:
                 "SOURCE_CONTINUITY_BROKEN"
             ),
         }[self.action]
-        if self.reason_code != expected_reason:
+        if type(self.reason_code) is not str or self.reason_code != expected_reason:
             raise SegmentIncrementalSourceContinuityError(
                 "SEGMENT_SOURCE_CONTINUITY_DECISION_INVARIANT_INVALID"
             )
