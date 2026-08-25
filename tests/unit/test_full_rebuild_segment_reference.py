@@ -81,8 +81,7 @@ def test_tail_reason_preserved_until_explicit_completion():
         assert result.completed is False
 
 
-def test_incremental_checkpoint_and_emitter_are_not_integration_dependencies():
+def test_incremental_and_checkpoint_remain_nonintegration_dependencies():
     source = (ROOT / "src/chan_parser/engine/full_rebuild.py").read_text()
     assert "IncrementalEngine" not in source
     assert "segment_checkpoint" not in source
-    assert "segment_lifecycle_emitter" not in source

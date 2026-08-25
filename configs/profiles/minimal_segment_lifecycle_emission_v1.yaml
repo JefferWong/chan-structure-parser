@@ -27,6 +27,7 @@ binding:
   canonical_oracle_calls_allowed: false
 
 integration:
+  full_rebuild_reference_integration_enabled: true
   parser_integration_enabled: false
   checkpoint_integration_enabled: false
   bounded_tail_integration_enabled: false

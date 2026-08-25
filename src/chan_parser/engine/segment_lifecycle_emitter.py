@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from itertools import pairwise
 import hashlib
 import json
@@ -62,6 +63,7 @@ class SegmentLifecycleEmitter:
             "canonical_oracle_calls_allowed": False,
         },
         "integration": {
+            "full_rebuild_reference_integration_enabled": True,
             "parser_integration_enabled": False,
             "checkpoint_integration_enabled": False,
             "bounded_tail_integration_enabled": False,
@@ -79,6 +81,11 @@ class SegmentLifecycleEmitter:
         self._validate_exact_mapping(profile, self._EXPECTED_PROFILE, "profile")
         self.profile_id = self.PROFILE_ID
         self.profile_version = self.PROFILE_VERSION
+
+    @classmethod
+    def reference_profile(cls) -> dict[str, Any]:
+        """Return an isolated copy of the authoritative emitter profile."""
+        return deepcopy(cls._EXPECTED_PROFILE)
 
     def emit(
         self,

@@ -85,10 +85,13 @@ def test_emitter_makes_zero_canonical_oracle_calls():
 
 
 def test_no_engine_or_parser_path_imports_or_exports_emitter():
-    for path in (SEGMENT_ENGINE, FULL, INCREMENTAL, ENGINE_INIT):
+    for path in (SEGMENT_ENGINE, INCREMENTAL, ENGINE_INIT):
         text = path.read_text(encoding="utf-8")
         assert "SegmentLifecycleEmitter" not in text
         assert "segment_lifecycle_emitter" not in text
+    full_text = FULL.read_text(encoding="utf-8")
+    assert "SegmentLifecycleEmitter" in full_text
+    assert "segment_lifecycle_emitter" in full_text
     assert "SegmentLifecycleEmitter" not in ENGINE_INIT.read_text(encoding="utf-8")
 
 
@@ -98,7 +101,7 @@ def test_only_emitter_imports_lifecycle_contract_in_production():
         path
         for path in SOURCE.rglob("*.py")
         if path != contract
-        and "segment_lifecycle" in path.read_text(encoding="utf-8")
+        and "..contracts.segment_lifecycle" in _import_paths(_tree(path))
     }
     assert importers == {EMITTER}
 
@@ -121,6 +124,8 @@ def test_parser_checkpoint_and_bounded_tail_remain_unintegrated():
         assert token not in emitter_text
     for path in SOURCE.rglob("*.py"):
         if path == EMITTER:
+            continue
+        if path == FULL:
             continue
         assert "segment_lifecycle_emitter" not in path.read_text(encoding="utf-8")
 
@@ -157,6 +162,7 @@ def test_emission_profile_is_exactly_emitter_only_and_fail_closed():
             "canonical_oracle_calls_allowed": False,
         },
         "integration": {
+            "full_rebuild_reference_integration_enabled": True,
             "parser_integration_enabled": False,
             "checkpoint_integration_enabled": False,
             "bounded_tail_integration_enabled": False,
