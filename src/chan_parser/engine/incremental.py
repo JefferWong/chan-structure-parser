@@ -394,6 +394,8 @@ class IncrementalEngine:
         }
 
     def _evaluate_segment_reference(self) -> None:
+        self._segment_reference_result = None
+        self._segment_reference_source_strokes = ()
         source = tuple(
             stroke
             for stroke in self._strokes

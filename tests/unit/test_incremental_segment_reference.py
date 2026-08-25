@@ -9,12 +9,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from chan_parser.domain.lifecycle import StructureStatus
+from chan_parser.domain.lifecycle import StructureStatus, StrokeDirection
 from chan_parser.domain.raw_bar import RawBar
+from chan_parser.domain.stroke import Stroke
 from chan_parser.engine.incremental import IncrementalEngine
 from chan_parser.engine.segment import SegmentEngine
-
-from tests.unit.test_segment_engine import make_strokes
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,19 +27,51 @@ def profile() -> dict:
     )
 
 
-def bars(count: int = 1) -> list[RawBar]:
+def bars(count: int = 1, start_index: int = 0) -> list[RawBar]:
     start = datetime(2024, 1, 2, 9, 30)
     return [
         RawBar(
-            f"bar_{index + 1:06d}",
-            index,
-            start + timedelta(minutes=30 * index),
-            100 + index,
-            102 + index,
-            99 + index,
-            101 + index,
+            f"bar_{start_index + index + 1:06d}",
+            start_index + index,
+            start + timedelta(minutes=30 * (start_index + index)),
+            100 + start_index + index,
+            102 + start_index + index,
+            99 + start_index + index,
+            101 + start_index + index,
         )
         for index in range(count)
+    ]
+
+
+def make_strokes(points: list[float]) -> list[Stroke]:
+    return [
+        Stroke(
+            object_id=f"stroke_{index:06d}_r1",
+            logical_id=f"stroke:{index}",
+            revision=1,
+            status=StructureStatus.CONFIRMED,
+            created_at_bar=index + 1,
+            confirmed_at_bar=index + 1,
+            rule_profile="minimal_strict_v1",
+            rule_version="1.0.0",
+            stroke_id=f"stroke_{index:06d}",
+            direction=(
+                StrokeDirection.UP if start < end else StrokeDirection.DOWN
+            ),
+            start_fractal_id=f"fx:{index}",
+            end_fractal_id=f"fx:{index + 1}",
+            start_price=start,
+            end_price=end,
+            start_bar_index=index,
+            end_bar_index=index + 1,
+            merged_bar_count=2,
+            max_price=max(start, end),
+            min_price=min(start, end),
+            price_range=abs(end - start),
+            confirmation_requirements=[],
+            repaint_risk="NONE",
+        )
+        for index, (start, end) in enumerate(zip(points, points[1:]))
     ]
 
 
@@ -107,6 +138,50 @@ def test_reference_result_is_deterministic_and_not_production_output():
     assert "segments" not in first_state["structures"]
 
 
+def test_reference_state_resets_when_same_engine_is_disabled_or_has_no_result():
+    state = {"strokes": make_strokes([0, 10, 4, 12, 6, 11, 5])}
+    engine = prepared_engine(state["strokes"], segment_reference_enabled=True)
+    engine.stroke_engine.process = lambda fractals, merged, raw_count: (
+        state["strokes"],
+        [],
+    )
+
+    engine.append_batch(bars(start_index=0))
+    assert engine.get_segment_reference_result()["reason_code"] == (
+        "SEGMENT_FIRST_CASE_CONFIRMED"
+    )
+
+    engine.segment_reference_enabled = False
+    state["strokes"] = []
+    engine.append_batch(bars(start_index=1))
+    assert engine.get_segment_reference_result() is None
+
+    engine.segment_reference_enabled = True
+    engine.append_batch(bars(start_index=2))
+    current = engine.get_segment_reference_result()
+    assert current["reason_code"] is None
+    assert current["segment"] is None
+
+
+def test_reference_state_resets_before_fail_closed_evaluation(monkeypatch):
+    strokes = make_strokes([0, 10, 4, 12, 6, 11, 5])
+    engine = prepared_engine(strokes, segment_reference_enabled=True)
+    engine.append_batch(bars(start_index=0))
+    assert engine.get_segment_reference_result()["reason_code"] == (
+        "SEGMENT_FIRST_CASE_CONFIRMED"
+    )
+
+    def fail_closed(*args, **kwargs):
+        raise ValueError("reference evaluation failed closed")
+
+    monkeypatch.setattr(SegmentEngine, "process_primary", fail_closed)
+    with pytest.raises(ValueError, match="reference evaluation failed closed"):
+        engine.append_batch(bars(start_index=1))
+    current = engine.get_segment_reference_result()
+    assert current["reason_code"] is None
+    assert current["segment"] is None
+
+
 def test_reference_mode_does_not_call_lifecycle_or_checkpoint(monkeypatch):
     strokes = make_strokes([0, 10, 4, 12, 6, 11, 5])
     engine = prepared_engine(strokes, segment_reference_enabled=True)
@@ -142,7 +217,9 @@ def test_second_case_pending_remains_unmaterialized_and_event_free():
     assert result["events"] == []
 
 
-@pytest.mark.parametrize("value", [1, 0, "true", "false", None, []])
+@pytest.mark.parametrize(
+    "value", [1, 0, "true", "false", None, [], {}, object()]
+)
 def test_reference_opt_in_requires_exact_bool(value):
     with pytest.raises(TypeError, match="segment_reference_enabled must be a bool"):
         IncrementalEngine(profile(), segment_reference_enabled=value)
