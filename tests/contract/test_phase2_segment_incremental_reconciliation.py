@@ -266,6 +266,55 @@ def test_first_case_candidate_direction_must_match_result():
     )
 
 
+@pytest.mark.parametrize(
+    "candidate,reason_code",
+    [
+        (
+            replace(segment(), invalidated_at_bar=10),
+            "SEGMENT_RECONCILIATION_CANDIDATE_LIFECYCLE_STATE_INVALID",
+        ),
+        (
+            replace(segment(), replaced_by="replacement-object"),
+            "SEGMENT_RECONCILIATION_CANDIDATE_LIFECYCLE_STATE_INVALID",
+        ),
+        (
+            replace(segment(), start_stroke_id="stroke_000002"),
+            "SEGMENT_RECONCILIATION_CANDIDATE_SOURCE_BINDING_INVALID",
+        ),
+        (
+            replace(segment(), end_stroke_id="stroke_000002"),
+            "SEGMENT_RECONCILIATION_CANDIDATE_SOURCE_BINDING_INVALID",
+        ),
+    ],
+)
+def test_first_case_candidate_lifecycle_and_boundaries_fail_closed(
+    candidate, reason_code
+):
+    with pytest.raises(SegmentIncrementalReconciliationError) as raised:
+        reconcile_incremental_segment(
+            previous=None, current=first_case(candidate), source_strokes=strokes()
+        )
+    assert raised.value.reason_code == reason_code
+
+
+def test_new_candidate_failure_paths_are_input_pure():
+    previous = replace(segment(), object_id="previous-object-r1")
+    source = strokes()
+    for candidate in (
+        replace(segment(), invalidated_at_bar=10),
+        replace(segment(), replaced_by="replacement-object"),
+        replace(segment(), start_stroke_id="stroke_000002"),
+        replace(segment(), end_stroke_id="stroke_000002"),
+    ):
+        current = first_case(candidate)
+        before = deepcopy((previous, current, source))
+        with pytest.raises(SegmentIncrementalReconciliationError):
+            reconcile_incremental_segment(
+                previous=previous, current=current, source_strokes=source
+            )
+        assert (previous, current, source) == before
+
+
 def test_candidate_source_must_be_exact_nonempty_ordered_prefix():
     candidate = segment()
     candidate.stroke_ids = ["stroke_000002", "stroke_000001"]
@@ -403,6 +452,36 @@ def test_decision_enforces_revise_replace_and_no_previous_invariants():
                 next_revision=None,
             )
         )
+
+
+@pytest.mark.parametrize(
+    "action,reason_code,candidate_content_hash",
+    [
+        (
+            SegmentIncrementalReconciliationAction.REUSE,
+            "SEGMENT_RECONCILIATION_IDENTITY_REUSED",
+            "same-hash",
+        ),
+        (
+            SegmentIncrementalReconciliationAction.REVISE,
+            "SEGMENT_RECONCILIATION_CONTENT_CHANGED",
+            "different",
+        ),
+    ],
+)
+def test_decision_rejects_bool_next_revision_for_reuse_and_revise(
+    action, reason_code, candidate_content_hash
+):
+    with pytest.raises(SegmentIncrementalReconciliationError) as raised:
+        SegmentIncrementalReconciliationDecision(
+            **decision_fields(
+                action=action,
+                reason_code=reason_code,
+                candidate_content_hash=candidate_content_hash,
+                next_revision=True,
+            )
+        )
+    assert raised.value.reason_code == "SEGMENT_RECONCILIATION_NEXT_REVISION_TYPE_INVALID"
 
 
 def test_repeated_deepcopied_semantically_equal_inputs_are_deterministic_and_pure():

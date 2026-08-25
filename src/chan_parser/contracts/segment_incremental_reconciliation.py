@@ -100,6 +100,13 @@ class SegmentIncrementalReconciliationDecision:
             raise SegmentIncrementalReconciliationError(
                 "SEGMENT_RECONCILIATION_DECISION_IDENTITY_INVALID"
             )
+        if self.action in (
+            SegmentIncrementalReconciliationAction.REUSE,
+            SegmentIncrementalReconciliationAction.REVISE,
+        ) and type(self.next_revision) is not int:
+            raise SegmentIncrementalReconciliationError(
+                "SEGMENT_RECONCILIATION_NEXT_REVISION_TYPE_INVALID"
+            )
         if self.action is SegmentIncrementalReconciliationAction.REUSE:
             valid = (
                 self.reason_code == "SEGMENT_RECONCILIATION_IDENTITY_REUSED"
@@ -267,6 +274,10 @@ def _validate_current(
             raise SegmentIncrementalReconciliationError(
                 "SEGMENT_RECONCILIATION_CANDIDATE_STATUS_INVALID"
             )
+        if candidate.invalidated_at_bar is not None or candidate.replaced_by is not None:
+            raise SegmentIncrementalReconciliationError(
+                "SEGMENT_RECONCILIATION_CANDIDATE_LIFECYCLE_STATE_INVALID"
+            )
         if candidate.direction is not current.candidate_direction:
             raise SegmentIncrementalReconciliationError(
                 "SEGMENT_RECONCILIATION_CANDIDATE_DIRECTION_MISMATCH"
@@ -360,6 +371,8 @@ def _validate_candidate_source_binding(
         or any(type(stroke_id) is not str or not stroke_id for stroke_id in stroke_ids)
         or len(stroke_ids) > len(source)
         or tuple(stroke_ids) != tuple(stroke.stroke_id for stroke in source[: len(stroke_ids)])
+        or candidate.start_stroke_id != stroke_ids[0]
+        or candidate.end_stroke_id != stroke_ids[-1]
     ):
         raise SegmentIncrementalReconciliationError(
             "SEGMENT_RECONCILIATION_CANDIDATE_SOURCE_BINDING_INVALID"
