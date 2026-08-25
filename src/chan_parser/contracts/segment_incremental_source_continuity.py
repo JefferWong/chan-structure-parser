@@ -170,6 +170,10 @@ def _validate_source_strokes(
     for stroke in source:
         if stroke.status is not StructureStatus.CONFIRMED:
             raise SegmentIncrementalSourceContinuityError(f"{prefix}_STATUS_INVALID")
+        if stroke.invalidated_at_bar is not None or stroke.replaced_by is not None:
+            raise SegmentIncrementalSourceContinuityError(
+                f"{prefix}_LIFECYCLE_INVALID"
+            )
         for field in ("logical_id", "object_id", "stroke_id"):
             value = getattr(stroke, field)
             if type(value) is not str or not value:

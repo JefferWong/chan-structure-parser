@@ -243,12 +243,20 @@ def test_unstable_non_string_and_raising_content_hash_fail_closed(monkeypatch):
     with pytest.raises(SegmentIncrementalSourceContinuityError):
         evaluate()
 
-    calls = iter(("stable", "stable", "changed"))
-    monkeypatch.setattr(Stroke, "content_hash", lambda self: next(calls))
-    with pytest.raises(SegmentIncrementalSourceContinuityError):
-        evaluate()
-
     monkeypatch.setattr(Segment, "content_hash", original_segment_hash)
+    calls_by_instance = {}
+
+    def unstable_stroke_hash(self):
+        key = id(self)
+        calls_by_instance[key] = calls_by_instance.get(key, 0) + 1
+        return "first" if calls_by_instance[key] == 1 else "second"
+
+    monkeypatch.setattr(Stroke, "content_hash", unstable_stroke_hash)
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as stroke_unstable:
+        evaluate()
+    assert stroke_unstable.value.reason_code.endswith("CONTENT_HASH_INVALID")
+    assert any(call_count >= 2 for call_count in calls_by_instance.values())
+
     monkeypatch.setattr(Stroke, "content_hash", lambda self: None)
     with pytest.raises(SegmentIncrementalSourceContinuityError):
         evaluate()
@@ -389,6 +397,41 @@ def test_nonconfirmed_source_stroke_fails_closed(source_name):
     with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
         evaluate(**{source_name: tuple(source)})
     assert raised.value.reason_code.endswith("STATUS_INVALID")
+
+
+@pytest.mark.parametrize(
+    "source_name,reason_prefix",
+    [
+        ("historical", "SEGMENT_SOURCE_CONTINUITY_PREVIOUS_SOURCE"),
+        ("current", "SEGMENT_SOURCE_CONTINUITY_CURRENT_SOURCE"),
+    ],
+)
+@pytest.mark.parametrize(
+    "lifecycle_change",
+    [
+        {"invalidated_at_bar": 9},
+        {"replaced_by": "stroke-replacement"},
+    ],
+)
+def test_confirmed_source_lifecycle_evidence_fails_closed_without_mutation(
+    source_name, reason_prefix, lifecycle_change
+):
+    previous = previous_segment()
+    historical = strokes()
+    current = strokes()
+    changed = list(historical if source_name == "historical" else current)
+    changed[1] = replace(changed[1], **lifecycle_change)
+    if source_name == "historical":
+        historical = tuple(changed)
+    else:
+        current = tuple(changed)
+    before = deepcopy((previous, historical, current))
+
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
+        evaluate(previous=previous, historical=historical, current=current)
+
+    assert raised.value.reason_code == f"{reason_prefix}_LIFECYCLE_INVALID"
+    assert (previous, historical, current) == before
 
 
 @pytest.mark.parametrize(
