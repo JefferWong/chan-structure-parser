@@ -88,14 +88,38 @@ def replay_segments(engine, strokes, watermark):
     return segments
 
 
-def test_raw_watermark_prefix_blocks_future_strokes_and_is_data_driven():
+def test_raw_watermark_prefix_blocks_future_strokes_and_is_data_driven(
+    monkeypatch,
+):
     strokes = raw_strokes()
     replay = FullRebuildEngine(
         phase1_profile(), segment_reference_enabled=True
     )
-    segments_1 = replay_segments(replay, strokes[:6], 105)
+    assert any(
+        stroke.confirmed_at_raw_bar_index > 105
+        for stroke in strokes
+    )
+    captured_sources = []
+    original_process_primary = SegmentEngine.process_primary
+
+    def capture_source(engine, source, **kwargs):
+        captured_sources.append(tuple(source))
+        return original_process_primary(engine, source, **kwargs)
+
+    monkeypatch.setattr(SegmentEngine, "process_primary", capture_source)
+    segments_1 = replay_segments(replay, strokes, 105)
     segments_2 = replay_segments(replay, strokes, 106)
 
+    assert len(captured_sources) == 2
+    assert all(
+        stroke.confirmed_at_raw_bar_index <= 105
+        for stroke in captured_sources[0]
+    )
+    assert any(
+        stroke.confirmed_at_raw_bar_index > 105
+        for stroke in captured_sources[1]
+    )
+    assert segments_1
     assert all(
         segment.confirmed_at_raw_bar_index <= 105
         for segment in segments_1
@@ -105,7 +129,10 @@ def test_raw_watermark_prefix_blocks_future_strokes_and_is_data_driven():
         for segment in segments_2
     )
     assert all(
-        "stroke_000006" not in segment.stroke_ids
+        all(
+            stroke_id != "stroke_000006"
+            for stroke_id in segment.stroke_ids
+        )
         for segment in segments_1
     )
 
@@ -115,7 +142,11 @@ def test_same_segment_structural_axis_is_unchanged_across_watermarks():
     replay = FullRebuildEngine(
         phase1_profile(), segment_reference_enabled=True
     )
-    first = replay_segments(replay, strokes[:6], 105)
+    assert any(
+        stroke.confirmed_at_raw_bar_index > 105
+        for stroke in strokes
+    )
+    first = replay_segments(replay, strokes, 105)
     later = replay_segments(replay, strokes, 106)
     assert first and later
     left, right = first[0], later[0]
@@ -129,28 +160,126 @@ def test_same_segment_structural_axis_is_unchanged_across_watermarks():
     assert right.confirmed_at_raw_bar_index >= left.confirmed_at_raw_bar_index
 
 
-def test_raw_replay_requires_complete_valid_monotonic_raw_visibility():
-    for mutation in (
+@pytest.mark.parametrize(
+    "mutation",
+    (
         lambda values: values.__setitem__(
-            2, replace(values[2], confirmed_at_raw_bar_index=True)
-        ),
-        lambda values: values.__setitem__(
-            2, replace(values[2], confirmed_at_raw_bar_index=-1)
-        ),
-        lambda values: values.__setitem__(
-            2, replace(values[2], confirmed_at_raw_bar_index=100)
-        ),
-    ):
-        strokes = raw_strokes()
-        mutation(strokes)
-        with pytest.raises(
-            SegmentEngineCoreError,
-            match="SEGMENT_RAW_REPLAY_VISIBILITY_INVALID",
-        ):
-            replay = FullRebuildEngine(
-                phase1_profile(), segment_reference_enabled=True
+            2, replace(
+                values[2],
+                created_at_raw_bar_index=None,
+                confirmed_at_raw_bar_index=102,
             )
-            replay_segments(replay, strokes, 106)
+        ),
+        lambda values: values.__setitem__(
+            2, replace(
+                values[2],
+                created_at_raw_bar_index=-1,
+                confirmed_at_raw_bar_index=102,
+            )
+        ),
+        lambda values: values.__setitem__(
+            2, replace(
+                values[2],
+                created_at_raw_bar_index=103,
+                confirmed_at_raw_bar_index=102,
+            )
+        ),
+        lambda values: values.__setitem__(
+            2, replace(
+                values[2],
+                created_at_raw_bar_index=True,
+                confirmed_at_raw_bar_index=102,
+            )
+        ),
+    ),
+)
+def test_raw_replay_requires_complete_valid_monotonic_raw_visibility(mutation):
+    strokes = raw_strokes()
+    mutation(strokes)
+    with pytest.raises(
+        SegmentEngineCoreError,
+        match="SEGMENT_RAW_REPLAY_VISIBILITY_INVALID",
+    ):
+        replay = FullRebuildEngine(
+            phase1_profile(), segment_reference_enabled=True
+        )
+        replay_segments(replay, strokes, 106)
+
+
+def test_raw_replay_rejects_invalid_confirmation_raw_field():
+    strokes = raw_strokes()
+    strokes[2] = replace(strokes[2], confirmed_at_raw_bar_index=True)
+    with pytest.raises(
+        SegmentEngineCoreError,
+        match="SEGMENT_RAW_REPLAY_VISIBILITY_INVALID",
+    ):
+        replay = FullRebuildEngine(
+            phase1_profile(), segment_reference_enabled=True
+        )
+        replay_segments(replay, strokes, 106)
+
+
+def test_incomplete_reference_tail_is_the_only_swallowed_segment_error(
+    monkeypatch,
+):
+    strokes = raw_strokes()
+    replay = FullRebuildEngine(
+        phase1_profile(), segment_reference_enabled=True
+    )
+
+    def raise_incomplete_tail(*args, **kwargs):
+        raise SegmentEngineCoreError("SEGMENT_FEATURE_INCLUSION_UNSEEDED")
+
+    monkeypatch.setattr(SegmentEngine, "process_primary", raise_incomplete_tail)
+    assert replay_segments(replay, strokes, 106) == []
+
+
+def test_unknown_segment_error_is_not_swallowed(monkeypatch):
+    strokes = raw_strokes()
+    replay = FullRebuildEngine(
+        phase1_profile(), segment_reference_enabled=True
+    )
+
+    def raise_unknown(*args, **kwargs):
+        raise SegmentEngineCoreError("SEGMENT_UNKNOWN_TEST_ERROR")
+
+    monkeypatch.setattr(SegmentEngine, "process_primary", raise_unknown)
+    with pytest.raises(SegmentEngineCoreError, match="SEGMENT_UNKNOWN_TEST_ERROR"):
+        replay_segments(replay, strokes, 106)
+
+
+def test_raw_partial_segment_error_is_not_swallowed(monkeypatch):
+    strokes = raw_strokes()
+    replay = FullRebuildEngine(
+        phase1_profile(), segment_reference_enabled=True
+    )
+
+    def raise_partial(*args, **kwargs):
+        raise SegmentEngineCoreError("SEGMENT_SOURCE_RAW_VISIBILITY_PARTIAL")
+
+    monkeypatch.setattr(SegmentEngine, "process_primary", raise_partial)
+    with pytest.raises(
+        SegmentEngineCoreError,
+        match="SEGMENT_SOURCE_RAW_VISIBILITY_PARTIAL",
+    ):
+        replay_segments(replay, strokes, 106)
+
+
+def test_raw_invalid_segment_error_is_not_swallowed(monkeypatch):
+    strokes = raw_strokes()
+    replay = FullRebuildEngine(
+        phase1_profile(), segment_reference_enabled=True
+    )
+
+    def raise_invalid(*args, **kwargs):
+        raise SegmentEngineCoreError("SEGMENT_SOURCE_RAW_VISIBILITY_INVALID")
+
+    monkeypatch.setattr(SegmentEngine, "process_primary", raise_invalid)
+    with pytest.raises(
+        SegmentEngineCoreError,
+        match="SEGMENT_SOURCE_RAW_VISIBILITY_INVALID",
+    ):
+        replay_segments(replay, strokes, 106)
 
 
 @pytest.mark.parametrize("watermark", [True, -1, 1.5])

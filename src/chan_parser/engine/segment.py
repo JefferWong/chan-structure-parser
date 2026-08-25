@@ -45,6 +45,10 @@ from ..domain.stroke import Stroke
 class SegmentEngineCoreError(ValueError):
     """Raised when the core engine cannot make a deterministic safe decision."""
 
+    def __init__(self, reason_code: str):
+        self.reason_code = reason_code
+        super().__init__(reason_code)
+
 
 @dataclass(frozen=True)
 class SegmentEngineResult:
