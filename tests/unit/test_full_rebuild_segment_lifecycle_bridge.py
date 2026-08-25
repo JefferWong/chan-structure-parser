@@ -8,17 +8,20 @@ import pytest
 import yaml
 
 from chan_parser.audit.event_log import EventLog
-from chan_parser.domain.lifecycle import EventType, LifecycleEvent
+from chan_parser.domain.lifecycle import (
+    EventType,
+    LifecycleEvent,
+    StructureStatus,
+    StrokeDirection,
+)
 from chan_parser.domain.raw_bar import RawBar
+from chan_parser.domain.stroke import Stroke
 from chan_parser.engine.full_rebuild import FullRebuildEngine
-from chan_parser.engine.segment import SegmentEngine
+from chan_parser.engine.segment import SegmentEngine, SegmentEngineCoreError
 from chan_parser.engine.segment_lifecycle_emitter import (
     SegmentLifecycleEmissionError,
     SegmentLifecycleEmitter,
 )
-
-from tests.unit.test_segment_lifecycle_emitter import make_strokes
-
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,6 +44,42 @@ def raw_bars() -> list[RawBar]:
             100.5,
         )
     ]
+
+
+def make_strokes(
+    points: list[float],
+    *,
+    visibility_overrides: dict[int, int] | None = None,
+) -> list[Stroke]:
+    visibility_overrides = visibility_overrides or {}
+    strokes: list[Stroke] = []
+    for index, (start, end) in enumerate(zip(points, points[1:])):
+        direction = StrokeDirection.UP if start < end else StrokeDirection.DOWN
+        strokes.append(Stroke(
+            object_id=f"stroke_{index:06d}_r1",
+            logical_id=f"stroke:{index}",
+            revision=1,
+            status=StructureStatus.CONFIRMED,
+            created_at_bar=index + 1,
+            confirmed_at_bar=visibility_overrides.get(index, index + 1),
+            rule_profile="minimal_strict_v1",
+            rule_version="1.0.0",
+            stroke_id=f"stroke_{index:06d}",
+            direction=direction,
+            start_fractal_id=f"fx:{index}",
+            end_fractal_id=f"fx:{index + 1}",
+            start_price=start,
+            end_price=end,
+            start_bar_index=index,
+            end_bar_index=index + 1,
+            merged_bar_count=2,
+            max_price=max(start, end),
+            min_price=min(start, end),
+            price_range=abs(end - start),
+            confirmation_requirements=[],
+            repaint_risk="NONE",
+        ))
+    return strokes
 
 
 def prepared_engine(strokes, phase1_events=()):
@@ -92,11 +131,14 @@ def test_full_rebuild_first_case_bridge_is_ordered_and_eventlog_owned(monkeypatc
     assert result["events"][0]["object_type"] == "phase1"
     assert result["events"][1]["object_type"] == "segment"
     assert result["audit"]["event_count"] == len(result["events"])
-    assert result["audit"]["event_log_sha256"] == EventLogDigest(result["events"])
+    assert result["audit"]["event_log_sha256"] == _event_log_digest(result["events"])
 
 
 def test_bridge_requires_reference_and_closes_raw_replay():
-    with pytest.raises(Exception, match="SEGMENT_LIFECYCLE_REQUIRES_REFERENCE"):
+    with pytest.raises(
+        SegmentEngineCoreError,
+        match="SEGMENT_LIFECYCLE_REQUIRES_REFERENCE",
+    ):
         FullRebuildEngine(
             profile(),
             segment_lifecycle_emission_enabled=True,
@@ -107,7 +149,10 @@ def test_bridge_requires_reference_and_closes_raw_replay():
         segment_reference_enabled=True,
         segment_lifecycle_emission_enabled=True,
     )
-    with pytest.raises(Exception, match="SEGMENT_LIFECYCLE_RAW_REPLAY_NOT_INTEGRATED"):
+    with pytest.raises(
+        SegmentEngineCoreError,
+        match="SEGMENT_LIFECYCLE_RAW_REPLAY_NOT_INTEGRATED",
+    ):
         instance.process(raw_bars(), raw_watermark=0)
 
 
@@ -172,7 +217,7 @@ def test_emitter_reference_profile_is_an_isolated_exact_copy():
     )
 
 
-def EventLogDigest(events: list[dict]) -> str:
+def _event_log_digest(events: list[dict]) -> str:
     log = EventLog()
     for event in events:
         log.record(LifecycleEvent(**event))
