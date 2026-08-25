@@ -204,6 +204,68 @@ def test_reference_mode_does_not_call_lifecycle_or_checkpoint(monkeypatch):
     assert [event for event in result["events"] if event["object_type"] == "segment"] == []
 
 
+def test_checkpoint_restore_refreshes_reference_from_restored_strokes(monkeypatch):
+    strokes_a = make_strokes([0, 10, 4, 12, 6, 11, 5])
+    strokes_b = make_strokes([0, 10, 4, 12, 6, 11, 5, 13])
+    engine = prepared_engine(strokes_a, segment_reference_enabled=True)
+    engine.checkpoint_interval = 0
+
+    state_a = engine.append_batch(bars(1, 0))
+    checkpoint_id = engine.create_checkpoint()
+    engine.stroke_engine.process = lambda *args, **kwargs: (strokes_b, [])
+    state_b = engine.append_batch(bars(1, 1))
+
+    assert state_a["audit"]["segment_reference"]["source_stroke_ids"] != (
+        state_b["audit"]["segment_reference"]["source_stroke_ids"]
+    )
+    calls = []
+    original = SegmentEngine.process_primary
+
+    def counted(instance, source, **kwargs):
+        calls.append((tuple(source), kwargs))
+        return original(instance, source, **kwargs)
+
+    monkeypatch.setattr(SegmentEngine, "process_primary", counted)
+    restored = engine.resume_from_checkpoint(checkpoint_id)
+    restored_stroke_ids = [
+        stroke["stroke_id"] for stroke in restored["structures"]["strokes"]
+    ]
+    restored_reference = restored["audit"]["segment_reference"]
+
+    assert restored_stroke_ids == [stroke.stroke_id for stroke in strokes_a]
+    assert restored_reference == engine.get_segment_reference_result()
+    assert len(calls) == 1
+    assert restored_reference["source_stroke_ids"] == restored_stroke_ids
+    assert not set(restored_reference["source_stroke_ids"]) - set(
+        state_a["audit"]["segment_reference"]["source_stroke_ids"]
+    )
+    assert "segments" not in restored["structures"]
+    assert [event for event in restored["events"] if event["object_type"] == "segment"] == []
+
+
+def test_disabled_checkpoint_restore_clears_reference_cache(monkeypatch):
+    strokes_a = make_strokes([0, 10, 4, 12, 6, 11, 5])
+    engine = prepared_engine(strokes_a, segment_reference_enabled=True)
+    engine.checkpoint_interval = 0
+
+    engine.append_batch(bars(1, 0))
+    checkpoint_id = engine.create_checkpoint()
+    engine.append_batch(bars(1, 1))
+    engine.segment_reference_enabled = False
+    monkeypatch.setattr(
+        SegmentEngine,
+        "process_primary",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("disabled restore must not evaluate reference")
+        ),
+    )
+
+    restored = engine.resume_from_checkpoint(checkpoint_id)
+
+    assert engine.get_segment_reference_result() is None
+    assert "segment_reference" not in restored["audit"]
+
+
 def test_second_case_pending_remains_unmaterialized_and_event_free():
     strokes = make_strokes([0, 3, 1, 8, 5, 7, 4])
     engine = prepared_engine(strokes, segment_reference_enabled=True)

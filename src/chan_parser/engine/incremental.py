@@ -322,6 +322,10 @@ class IncrementalEngine:
             for retained_id, retained in self._checkpoints.items()
             if retained_id <= checkpoint_id
         }
+        self._segment_reference_result = None
+        self._segment_reference_source_strokes = ()
+        if self.segment_reference_enabled:
+            self._evaluate_segment_reference()
         self._event_log.record(LifecycleEvent(
             event_type=EventType.CHECKPOINT_RESTORED,
             object_type="engine",
