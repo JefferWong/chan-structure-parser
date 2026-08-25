@@ -14,14 +14,8 @@ SOURCE = ROOT / "src/chan_parser"
 CONTRACT = SOURCE / "contracts/segment_checkpoint.py"
 PROFILE = ROOT / "configs/profiles/minimal_segment_checkpoint_contract_v1.yaml"
 PRODUCTION_BASELINE_SHA256 = {
-    SOURCE / "engine/full_rebuild.py": (
-        "2afef353341c5e35092885b4b48d0c4944dc9e8ae57d66f949c5b4538e39b36d"
-    ),
     SOURCE / "engine/incremental.py": (
         "aef46f378607560c0c2fb0015f0041b8c7092a01292560c1a5fb6c1563cd9cd8"
-    ),
-    SOURCE / "engine/segment.py": (
-        "d32a3f39f8e8abc95178db726f3eaabc4826789afd4f9d482b1634dad1527d21"
     ),
     SOURCE / "engine/segment_lifecycle_emitter.py": (
         "5049668739f6b71633e083d5ba14145964c536dd1e20e879e3ad7c4e39497f73"

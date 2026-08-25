@@ -18,6 +18,7 @@ RULE_PROFILE = ROOT / "configs/profiles/minimal_segment_canonical_rules_v1.yaml"
 ENGINE_PROFILE = ROOT / "configs/profiles/minimal_segment_engine_core_v1.yaml"
 ORACLE = ROOT / "src/chan_parser/contracts/segment_rules.py"
 SEGMENT_ENGINE = ROOT / "src/chan_parser/engine/segment.py"
+FULL = ROOT / "src/chan_parser/engine/full_rebuild.py"
 SEGMENT_LIFECYCLE = (
     ROOT / "src/chan_parser/contracts/segment_lifecycle.py"
 )
@@ -254,8 +255,14 @@ def test_only_segment_engine_core_may_import_or_call_reference_oracle():
             continue
         text = path.read_text(encoding="utf-8")
         assert "segment_rules" not in text, path
-        assert "minimal_segment_canonical_rules_v1" not in text, path
         tree = ast.parse(text)
+        assert _segment_rules_module_object_imports(tree) == [], path
+        assert _direct_segment_rules_imports(tree) == [], path
+        assert _lifecycle_oracle_authority_calls(tree) == [], path
+        # FullRebuild may obtain the isolated reference profile from the
+        # SegmentEngine factory; it may not bind to the oracle itself.
+        if path != FULL:
+            assert "minimal_segment_canonical_rules_v1" not in text, path
         assert not any(
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -313,6 +320,15 @@ def test_only_segment_engine_core_may_import_or_call_reference_oracle():
     )
     assert "SegmentEngine" not in engine_init
     assert "segment" not in engine_init.lower()
+
+
+def test_full_rebuild_does_not_bypass_oracle_authority_gate():
+    source = FULL.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assert "segment_rules" not in source
+    assert _segment_rules_module_object_imports(tree) == []
+    assert _direct_segment_rules_imports(tree) == []
+    assert _lifecycle_oracle_authority_calls(tree) == []
 
 
 def test_lifecycle_oracle_gate_rejects_module_alias_attribute_call_bypass():
@@ -405,7 +421,6 @@ def test_lifecycle_oracle_gate_rejects_absolute_module_alias_attribute_call():
 
 def test_phase1_parser_sources_have_no_segment_output_or_rule_profile_hook():
     for relative in (
-        "src/chan_parser/engine/full_rebuild.py",
         "src/chan_parser/engine/incremental.py",
     ):
         text = (ROOT / relative).read_text(encoding="utf-8")

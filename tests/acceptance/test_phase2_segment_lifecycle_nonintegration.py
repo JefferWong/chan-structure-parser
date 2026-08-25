@@ -151,11 +151,10 @@ def test_segment_engine_does_not_import_lifecycle_contract():
 
 
 def test_full_and_incremental_do_not_import_segment_engine():
-    for path in (FULL, INCREMENTAL):
-        text = path.read_text(encoding="utf-8")
-        assert "SegmentEngine" not in text
-        assert "engine.segment" not in text
-        assert "from .segment" not in text
+    text = INCREMENTAL.read_text(encoding="utf-8")
+    assert "SegmentEngine" not in text
+    assert "engine.segment" not in text
+    assert "from .segment" not in text
 
 
 def test_engine_package_does_not_export_segment_engine():
