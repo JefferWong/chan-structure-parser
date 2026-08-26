@@ -126,6 +126,14 @@ class SegmentIncrementalSourceContinuityDecision:
             raise SegmentIncrementalSourceContinuityError(
                 "SEGMENT_SOURCE_CONTINUITY_DECISION_CURRENT_BINDING_INVALID"
             )
+        if not self.historical_bound_prefix_binding:
+            raise SegmentIncrementalSourceContinuityError(
+                "SEGMENT_SOURCE_CONTINUITY_DECISION_HISTORICAL_BINDING_EMPTY"
+            )
+        if not self.current_source_binding:
+            raise SegmentIncrementalSourceContinuityError(
+                "SEGMENT_SOURCE_CONTINUITY_DECISION_CURRENT_BINDING_EMPTY"
+            )
         if any(
             type(binding) is not SegmentIncrementalSourceStrokeBinding
             for binding in (
@@ -136,6 +144,14 @@ class SegmentIncrementalSourceContinuityDecision:
             raise SegmentIncrementalSourceContinuityError(
                 "SEGMENT_SOURCE_CONTINUITY_DECISION_STROKE_BINDING_INVALID"
             )
+        _validate_binding_uniqueness(
+            self.historical_bound_prefix_binding,
+            "SEGMENT_SOURCE_CONTINUITY_DECISION_HISTORICAL_BINDING",
+        )
+        _validate_binding_uniqueness(
+            self.current_source_binding,
+            "SEGMENT_SOURCE_CONTINUITY_DECISION_CURRENT_BINDING",
+        )
         if len(self.previous_binding.stroke_ids) != self.bound_prefix_length:
             raise SegmentIncrementalSourceContinuityError(
                 "SEGMENT_SOURCE_CONTINUITY_DECISION_PREVIOUS_PREFIX_LENGTH_INVALID"
@@ -398,6 +414,18 @@ def _validate_stroke_ids(value: object, reason_code: str) -> None:
         raise SegmentIncrementalSourceContinuityError(reason_code)
     if len(value) != len(set(value)):
         raise SegmentIncrementalSourceContinuityError(reason_code)
+
+
+def _validate_binding_uniqueness(
+    bindings: tuple[SegmentIncrementalSourceStrokeBinding, ...],
+    prefix: str,
+) -> None:
+    for field in ("logical_id", "object_id", "stroke_id"):
+        values = tuple(getattr(binding, field) for binding in bindings)
+        if len(values) != len(set(values)):
+            raise SegmentIncrementalSourceContinuityError(
+                f"{prefix}_{field.upper()}_DUPLICATE"
+            )
 
 
 def _decision(

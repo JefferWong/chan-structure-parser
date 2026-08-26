@@ -451,6 +451,33 @@ def test_direct_decision_construction_fail_closes_adversarial_evidence(factory):
         factory(evaluate())
 
 
+def test_direct_decision_rejects_empty_current_binding():
+    with pytest.raises(SegmentIncrementalSourceContinuityError):
+        replace(evaluate(), current_source_binding=())
+
+
+@pytest.mark.parametrize(
+    "binding_name,field",
+    [
+        ("historical_bound_prefix_binding", "logical_id"),
+        ("historical_bound_prefix_binding", "object_id"),
+        ("historical_bound_prefix_binding", "stroke_id"),
+        ("current_source_binding", "logical_id"),
+        ("current_source_binding", "object_id"),
+        ("current_source_binding", "stroke_id"),
+    ],
+)
+def test_direct_decision_rejects_global_binding_identity_duplicates(
+    binding_name, field
+):
+    valid = evaluate()
+    bindings = list(getattr(valid, binding_name))
+    bindings[-1] = replace(bindings[-1], **{field: getattr(bindings[0], field)})
+
+    with pytest.raises(SegmentIncrementalSourceContinuityError):
+        replace(valid, **{binding_name: tuple(bindings)})
+
+
 @pytest.mark.parametrize(
     "factory",
     [
