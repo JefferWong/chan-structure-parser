@@ -182,6 +182,27 @@ def test_reference_state_resets_before_fail_closed_evaluation(monkeypatch):
     assert current["segment"] is None
 
 
+def test_reference_failure_clears_public_source_ids(monkeypatch):
+    strokes = make_strokes([0, 10, 4, 12, 6, 11, 5])
+    engine = prepared_engine(strokes, segment_reference_enabled=True)
+    engine.append_batch(bars(start_index=0))
+
+    def fail_closed(*args, **kwargs):
+        raise ValueError("reference evaluation failed closed")
+
+    monkeypatch.setattr(SegmentEngine, "process_primary", fail_closed)
+    with pytest.raises(ValueError, match="reference evaluation failed closed"):
+        engine.append_batch(bars(start_index=1))
+
+    assert engine.get_segment_reference_result() == {
+        "reason_code": None,
+        "completed": False,
+        "segment": None,
+        "pending_second_case": False,
+        "source_stroke_ids": [],
+    }
+
+
 def test_reference_mode_does_not_call_lifecycle_or_checkpoint(monkeypatch):
     strokes = make_strokes([0, 10, 4, 12, 6, 11, 5])
     engine = prepared_engine(strokes, segment_reference_enabled=True)
