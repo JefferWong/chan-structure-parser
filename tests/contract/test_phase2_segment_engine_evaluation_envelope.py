@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, fields, replace
 from collections.abc import Iterator, Sequence
 import inspect
 
@@ -93,6 +93,23 @@ def test_non_sequence_shape_is_rejected_before_normalization(source: object) -> 
     assert error.value.reason_code == "SEGMENT_SOURCE_BINDING_REQUIRED"
 
 
+def test_generator_is_rejected_without_calling_binder(monkeypatch) -> None:
+    calls = 0
+
+    def spy(_values):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("binder must not receive a generator")
+
+    monkeypatch.setattr(evaluation_module, "bind_incremental_segment_source_strokes", spy)
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as error:
+        evaluate_segment_engine_with_source_context(
+            (stroke for stroke in canonical_source()), sequence_id="test"
+        )
+    assert error.value.reason_code == "SEGMENT_SOURCE_BINDING_REQUIRED"
+    assert calls == 0
+
+
 def test_custom_sequence_is_read_once_and_shared_by_binder_and_engine(monkeypatch) -> None:
     source = tuple(canonical_source())
 
@@ -177,7 +194,15 @@ def test_all_engine_outcomes_are_bound(points: list[float], reason: str) -> None
 
 def test_binder_is_not_segment_engine_semantics_authority() -> None:
     nonalternating = canonical_source()
-    nonalternating[1] = replace(nonalternating[1], direction=StrokeDirection.UP)
+    nonalternating[1] = replace(
+        nonalternating[1],
+        direction=StrokeDirection.UP,
+        start_price=10,
+        end_price=12,
+        min_price=10,
+        max_price=12,
+        price_range=2,
+    )
     noncontiguous = canonical_source()
     noncontiguous[1] = replace(noncontiguous[1], start_fractal_id="other")
     # These sources remain valid source evidence, while the engine rejects them.
@@ -248,6 +273,102 @@ def test_direct_envelope_construction_fails_closed_and_is_frozen() -> None:
         replace(valid, result=object())
     with pytest.raises(FrozenInstanceError):
         valid.sequence_id = "changed"  # type: ignore[misc]
+
+
+def test_direct_envelope_rejects_result_and_binding_subclasses() -> None:
+    valid = evaluate_segment_engine_with_source_context(canonical_source(), sequence_id="test")
+
+    class ResultSubclass(SegmentEngineResult):
+        pass
+
+    class BindingSubclass(SegmentIncrementalSourceStrokeBinding):
+        pass
+
+    subclass_result = ResultSubclass(**valid.result.__dict__)
+    subclass_binding = BindingSubclass(**valid.current_source_binding[0].__dict__)
+    with pytest.raises(ValueError):
+        replace(valid, result=subclass_result)
+    with pytest.raises(ValueError):
+        replace(valid, current_source_binding=(subclass_binding,))
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "engine_profile_id",
+        "engine_profile_version",
+        "canonical_rules_profile_id",
+        "canonical_rules_profile_version",
+        "canonical_rules_baseline_commit",
+    ],
+)
+def test_each_direct_profile_field_must_match_authority(field: str) -> None:
+    valid = evaluate_segment_engine_with_source_context(canonical_source(), sequence_id="test")
+    with pytest.raises(ValueError):
+        replace(valid, **{field: "alternate"})
+
+
+def test_public_surface_and_envelope_fields_are_exact() -> None:
+    assert evaluation_module.__all__ == (
+        "SegmentEngineEvaluationEnvelope",
+        "evaluate_segment_engine_with_source_context",
+    )
+    assert tuple(field.name for field in fields(SegmentEngineEvaluationEnvelope)) == (
+        "result",
+        "current_source_binding",
+        "sequence_id",
+        "engine_profile_id",
+        "engine_profile_version",
+        "canonical_rules_profile_id",
+        "canonical_rules_profile_version",
+        "canonical_rules_baseline_commit",
+    )
+
+
+def test_direct_sequence_gate_uses_exact_nonempty_string() -> None:
+    valid = evaluate_segment_engine_with_source_context(canonical_source(), sequence_id="test")
+
+    class StringSubclass(str):
+        pass
+
+    for value in ("", b"test", True, 1, StringSubclass("test")):
+        with pytest.raises(ValueError):
+            replace(valid, sequence_id=value)
+
+
+def test_actual_binder_and_engine_error_authorities_are_preserved() -> None:
+    invalidated = replace(
+        canonical_source()[0], invalidated_at_bar=99
+    )
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as binder_error:
+        evaluate_segment_engine_with_source_context([invalidated], sequence_id="test")
+    assert binder_error.value.reason_code == "SEGMENT_SOURCE_BINDING_LIFECYCLE_INVALID"
+
+    nonalternating = canonical_source()
+    nonalternating[1] = replace(
+        nonalternating[1],
+        direction=StrokeDirection.UP,
+        start_price=10,
+        end_price=12,
+        min_price=10,
+        max_price=12,
+        price_range=2,
+    )
+    with pytest.raises(SegmentEngineCoreError) as engine_error:
+        evaluate_segment_engine_with_source_context(nonalternating, sequence_id="test")
+    assert engine_error.value.args == ("SEGMENT_SOURCE_DIRECTION_NOT_ALTERNATING",)
+
+
+def test_wrapped_result_matches_direct_engine_for_same_exact_source() -> None:
+    source = canonical_source()
+    direct = SegmentEngine(SegmentEngine.reference_profile()).process_primary(
+        source, sequence_id="evaluation:oracle"
+    )
+    wrapped = evaluate_segment_engine_with_source_context(
+        source, sequence_id="evaluation:oracle"
+    )
+    assert wrapped.result == direct
+    assert wrapped.current_source_binding == bind_incremental_segment_source_strokes(source)
 
 
 def test_public_binding_is_the_pr17_binding_authority() -> None:
