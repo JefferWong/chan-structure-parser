@@ -9,6 +9,8 @@ from chan_parser.contracts.segment_incremental_source_continuity import (
     SegmentIncrementalSourceContinuityAction,
     SegmentIncrementalSourceContinuityDecision,
     SegmentIncrementalSourceContinuityError,
+    SegmentIncrementalSourcePreviousBinding,
+    SegmentIncrementalSourceStrokeBinding,
     evaluate_incremental_segment_source_continuity,
 )
 from chan_parser.domain.lifecycle import StructureStatus, StrokeDirection
@@ -285,19 +287,34 @@ def test_raising_content_hash_fails_closed(monkeypatch, record_type):
 
 
 def test_decision_type_is_closed_and_action_invariants_are_exact():
+    valid = evaluate()
+
     with pytest.raises(SegmentIncrementalSourceContinuityError):
-        SegmentIncrementalSourceContinuityDecision("PRESERVED", "SOURCE_CONTINUITY_PRESERVED", 3)
+        SegmentIncrementalSourceContinuityDecision(
+            "PRESERVED",
+            "SOURCE_CONTINUITY_PRESERVED",
+            3,
+            valid.previous_binding,
+            valid.historical_bound_prefix_binding,
+            valid.current_source_binding,
+        )
     with pytest.raises(SegmentIncrementalSourceContinuityError):
         SegmentIncrementalSourceContinuityDecision(
             SegmentIncrementalSourceContinuityAction.PRESERVED,
             "SOURCE_CONTINUITY_BROKEN",
             3,
+            valid.previous_binding,
+            valid.historical_bound_prefix_binding,
+            valid.current_source_binding,
         )
     with pytest.raises(SegmentIncrementalSourceContinuityError):
         SegmentIncrementalSourceContinuityDecision(
             SegmentIncrementalSourceContinuityAction.BROKEN,
             "SOURCE_CONTINUITY_BROKEN",
             True,
+            valid.previous_binding,
+            valid.historical_bound_prefix_binding,
+            valid.current_source_binding,
         )
 
     class EqualToEverything:
@@ -309,7 +326,182 @@ def test_decision_type_is_closed_and_action_invariants_are_exact():
             SegmentIncrementalSourceContinuityAction.PRESERVED,
             EqualToEverything(),
             3,
+            valid.previous_binding,
+            valid.historical_bound_prefix_binding,
+            valid.current_source_binding,
         )
+
+
+def test_current_suffix_is_bound_but_does_not_change_preserved_prefix_action():
+    current_a = evaluate(current=strokes(5))
+    current_b = evaluate(current=strokes(8))
+
+    assert current_a.action is current_b.action is (
+        SegmentIncrementalSourceContinuityAction.PRESERVED
+    )
+    assert current_a.reason_code == current_b.reason_code == (
+        "SOURCE_CONTINUITY_PRESERVED"
+    )
+    assert current_a.bound_prefix_length == current_b.bound_prefix_length
+    assert current_a.previous_binding == current_b.previous_binding
+    assert current_a.historical_bound_prefix_binding == (
+        current_b.historical_bound_prefix_binding
+    )
+    assert current_a.current_source_binding != current_b.current_source_binding
+    assert current_a != current_b
+
+
+def test_historical_suffix_is_not_part_of_previous_supporting_binding():
+    historical_a = evaluate(historical=strokes(5))
+    historical_b = evaluate(historical=strokes(8))
+
+    assert historical_a == historical_b
+    assert historical_a.historical_bound_prefix_binding == (
+        historical_b.historical_bound_prefix_binding
+    )
+
+
+def test_binding_construction_reuses_validation_hash_results(monkeypatch):
+    segment_calls = 0
+    stroke_calls = {}
+    original_segment_hash = Segment.content_hash
+    original_stroke_hash = Stroke.content_hash
+    expected_segment_hash = original_segment_hash(previous_segment())
+    expected_stroke_hashes = tuple(
+        original_stroke_hash(stroke) for stroke in strokes(3)
+    )
+
+    def segment_hash(value):
+        nonlocal segment_calls
+        segment_calls += 1
+        return original_segment_hash(value)
+
+    def stroke_hash(value):
+        stroke_calls[value.stroke_id] = stroke_calls.get(value.stroke_id, 0) + 1
+        return original_stroke_hash(value)
+
+    monkeypatch.setattr(Segment, "content_hash", segment_hash)
+    monkeypatch.setattr(Stroke, "content_hash", stroke_hash)
+    decision = evaluate()
+
+    assert segment_calls == 2
+    assert stroke_calls == {f"stroke_{index + 1:06d}": 4 for index in range(5)}
+    assert decision.previous_binding.content_hash == expected_segment_hash
+    assert tuple(
+        binding.content_hash for binding in decision.historical_bound_prefix_binding
+    ) == expected_stroke_hashes
+
+
+def test_previous_binding_changes_with_previous_identity_and_revision():
+    original = evaluate()
+    changed = evaluate(
+        previous=replace(
+            previous_segment(),
+            logical_id="segment:other",
+            object_id="segment_000001_000003_U_r4",
+            segment_id="segment_000001_000003_U_other",
+            revision=4,
+        )
+    )
+
+    assert original.action is changed.action is (
+        SegmentIncrementalSourceContinuityAction.PRESERVED
+    )
+    assert original.previous_binding != changed.previous_binding
+    assert original.historical_bound_prefix_binding == (
+        changed.historical_bound_prefix_binding
+    )
+
+    changed_content = evaluate(
+        previous=replace(previous_segment(), rule_version="other-rule-version")
+    )
+    assert original.previous_binding.content_hash != (
+        changed_content.previous_binding.content_hash
+    )
+    assert original.previous_binding != changed_content.previous_binding
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda valid: replace(valid, previous_binding=object()),
+        lambda valid: replace(valid, historical_bound_prefix_binding=[]),
+        lambda valid: replace(valid, current_source_binding=[]),
+        lambda valid: replace(
+            valid,
+            historical_bound_prefix_binding=(
+                valid.historical_bound_prefix_binding[0],
+            ),
+        ),
+        lambda valid: replace(
+            valid,
+            previous_binding=replace(
+                valid.previous_binding,
+                stroke_ids=("wrong-stroke", "stroke_000002", "stroke_000003"),
+            ),
+        ),
+        lambda valid: replace(
+            valid,
+            action=SegmentIncrementalSourceContinuityAction.BROKEN,
+        ),
+    ],
+)
+def test_direct_decision_construction_fail_closes_adversarial_evidence(factory):
+    with pytest.raises(SegmentIncrementalSourceContinuityError):
+        factory(evaluate())
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: SegmentIncrementalSourcePreviousBinding(
+            "", "object", "segment", 1, "hash", ("stroke",)
+        ),
+        lambda: SegmentIncrementalSourcePreviousBinding(
+            "logical", "object", "segment", True, "hash", ("stroke",)
+        ),
+        lambda: SegmentIncrementalSourcePreviousBinding(
+            "logical", "object", "segment", 1, "", ("stroke",)
+        ),
+        lambda: SegmentIncrementalSourcePreviousBinding(
+            "logical", "object", "segment", 1, "hash", ["stroke"]
+        ),
+        lambda: SegmentIncrementalSourcePreviousBinding(
+            "logical", "object", "segment", 1, "hash", ("stroke", "stroke")
+        ),
+        lambda: SegmentIncrementalSourceStrokeBinding(
+            "logical", "object", "stroke", True, "hash"
+        ),
+        lambda: SegmentIncrementalSourceStrokeBinding(
+            "logical", "object", "stroke", 1, None
+        ),
+    ],
+)
+def test_binding_types_fail_closed_on_exact_type_and_value_errors(factory):
+    with pytest.raises(SegmentIncrementalSourceContinuityError):
+        factory()
+
+
+def test_preserved_decision_rejects_mismatching_or_short_current_prefix():
+    valid = evaluate()
+    changed = list(strokes())
+    changed[1] = replace(changed[1], revision=2)
+    changed_decision = evaluate(current=tuple(changed))
+    short_decision = evaluate(current=strokes(2))
+
+    with pytest.raises(SegmentIncrementalSourceContinuityError):
+        replace(
+            valid,
+            current_source_binding=changed_decision.current_source_binding,
+        )
+    with pytest.raises(SegmentIncrementalSourceContinuityError):
+        replace(valid, current_source_binding=short_decision.current_source_binding)
+
+
+def test_broken_decision_rejects_identical_adequate_prefix_evidence():
+    valid = evaluate()
+    with pytest.raises(SegmentIncrementalSourceContinuityError):
+        replace(valid, action=SegmentIncrementalSourceContinuityAction.BROKEN)
 
 
 def test_success_and_failure_paths_are_input_pure():

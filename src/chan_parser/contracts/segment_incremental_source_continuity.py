@@ -20,6 +20,8 @@ __all__ = (
     "SegmentIncrementalSourceContinuityAction",
     "SegmentIncrementalSourceContinuityDecision",
     "SegmentIncrementalSourceContinuityError",
+    "SegmentIncrementalSourcePreviousBinding",
+    "SegmentIncrementalSourceStrokeBinding",
     "evaluate_incremental_segment_source_continuity",
 )
 
@@ -40,12 +42,53 @@ class SegmentIncrementalSourceContinuityAction(str, Enum):
 
 
 @dataclass(frozen=True)
+class SegmentIncrementalSourcePreviousBinding:
+    """Explicit evidence binding for one previously confirmed Segment."""
+
+    logical_id: str
+    object_id: str
+    segment_id: str
+    revision: int
+    content_hash: str
+    stroke_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _validate_text(self.logical_id, "SEGMENT_SOURCE_CONTINUITY_BINDING_LOGICAL_ID_INVALID")
+        _validate_text(self.object_id, "SEGMENT_SOURCE_CONTINUITY_BINDING_OBJECT_ID_INVALID")
+        _validate_text(self.segment_id, "SEGMENT_SOURCE_CONTINUITY_BINDING_SEGMENT_ID_INVALID")
+        _validate_revision(self.revision, "SEGMENT_SOURCE_CONTINUITY_BINDING_REVISION_INVALID")
+        _validate_text(self.content_hash, "SEGMENT_SOURCE_CONTINUITY_BINDING_CONTENT_HASH_INVALID")
+        _validate_stroke_ids(self.stroke_ids, "SEGMENT_SOURCE_CONTINUITY_BINDING_STROKE_IDS_INVALID")
+
+
+@dataclass(frozen=True)
+class SegmentIncrementalSourceStrokeBinding:
+    """Explicit evidence binding for one authenticated Stroke record."""
+
+    logical_id: str
+    object_id: str
+    stroke_id: str
+    revision: int
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        _validate_text(self.logical_id, "SEGMENT_SOURCE_CONTINUITY_STROKE_BINDING_LOGICAL_ID_INVALID")
+        _validate_text(self.object_id, "SEGMENT_SOURCE_CONTINUITY_STROKE_BINDING_OBJECT_ID_INVALID")
+        _validate_text(self.stroke_id, "SEGMENT_SOURCE_CONTINUITY_STROKE_BINDING_STROKE_ID_INVALID")
+        _validate_revision(self.revision, "SEGMENT_SOURCE_CONTINUITY_STROKE_BINDING_REVISION_INVALID")
+        _validate_text(self.content_hash, "SEGMENT_SOURCE_CONTINUITY_STROKE_BINDING_CONTENT_HASH_INVALID")
+
+
+@dataclass(frozen=True)
 class SegmentIncrementalSourceContinuityDecision:
     """Immutable continuity result for one authenticated historical prefix."""
 
     action: SegmentIncrementalSourceContinuityAction
     reason_code: str
     bound_prefix_length: int
+    previous_binding: SegmentIncrementalSourcePreviousBinding
+    historical_bound_prefix_binding: tuple[SegmentIncrementalSourceStrokeBinding, ...]
+    current_source_binding: tuple[SegmentIncrementalSourceStrokeBinding, ...]
 
     def __post_init__(self) -> None:
         if type(self.action) is not SegmentIncrementalSourceContinuityAction:
@@ -71,6 +114,59 @@ class SegmentIncrementalSourceContinuityDecision:
             raise SegmentIncrementalSourceContinuityError(
                 "SEGMENT_SOURCE_CONTINUITY_DECISION_INVARIANT_INVALID"
             )
+        if type(self.previous_binding) is not SegmentIncrementalSourcePreviousBinding:
+            raise SegmentIncrementalSourceContinuityError(
+                "SEGMENT_SOURCE_CONTINUITY_DECISION_PREVIOUS_BINDING_INVALID"
+            )
+        if type(self.historical_bound_prefix_binding) is not tuple:
+            raise SegmentIncrementalSourceContinuityError(
+                "SEGMENT_SOURCE_CONTINUITY_DECISION_HISTORICAL_BINDING_INVALID"
+            )
+        if type(self.current_source_binding) is not tuple:
+            raise SegmentIncrementalSourceContinuityError(
+                "SEGMENT_SOURCE_CONTINUITY_DECISION_CURRENT_BINDING_INVALID"
+            )
+        if any(
+            type(binding) is not SegmentIncrementalSourceStrokeBinding
+            for binding in (
+                *self.historical_bound_prefix_binding,
+                *self.current_source_binding,
+            )
+        ):
+            raise SegmentIncrementalSourceContinuityError(
+                "SEGMENT_SOURCE_CONTINUITY_DECISION_STROKE_BINDING_INVALID"
+            )
+        if len(self.previous_binding.stroke_ids) != self.bound_prefix_length:
+            raise SegmentIncrementalSourceContinuityError(
+                "SEGMENT_SOURCE_CONTINUITY_DECISION_PREVIOUS_PREFIX_LENGTH_INVALID"
+            )
+        if len(self.historical_bound_prefix_binding) != self.bound_prefix_length:
+            raise SegmentIncrementalSourceContinuityError(
+                "SEGMENT_SOURCE_CONTINUITY_DECISION_HISTORICAL_PREFIX_LENGTH_INVALID"
+            )
+        if tuple(
+            binding.stroke_id for binding in self.historical_bound_prefix_binding
+        ) != self.previous_binding.stroke_ids:
+            raise SegmentIncrementalSourceContinuityError(
+                "SEGMENT_SOURCE_CONTINUITY_DECISION_HISTORICAL_PREFIX_MISMATCH"
+            )
+        current_prefix = self.current_source_binding[: self.bound_prefix_length]
+        if self.action is SegmentIncrementalSourceContinuityAction.PRESERVED:
+            if len(self.current_source_binding) < self.bound_prefix_length:
+                raise SegmentIncrementalSourceContinuityError(
+                    "SEGMENT_SOURCE_CONTINUITY_DECISION_PRESERVED_SOURCE_TOO_SHORT"
+                )
+            if self.historical_bound_prefix_binding != current_prefix:
+                raise SegmentIncrementalSourceContinuityError(
+                    "SEGMENT_SOURCE_CONTINUITY_DECISION_PRESERVED_PREFIX_MISMATCH"
+                )
+        elif (
+            len(self.current_source_binding) >= self.bound_prefix_length
+            and self.historical_bound_prefix_binding == current_prefix
+        ):
+            raise SegmentIncrementalSourceContinuityError(
+                "SEGMENT_SOURCE_CONTINUITY_DECISION_BROKEN_EVIDENCE_IDENTICAL"
+            )
 
 
 def evaluate_incremental_segment_source_continuity(
@@ -81,7 +177,7 @@ def evaluate_incremental_segment_source_continuity(
 ) -> SegmentIncrementalSourceContinuityDecision:
     """Authenticate and compare only the Stroke prefix bound by ``previous``."""
 
-    _validate_previous(previous)
+    previous_binding = _validate_previous(previous)
     historical, historical_hashes = _validate_source_strokes(
         previous_source_strokes,
         prefix="SEGMENT_SOURCE_CONTINUITY_PREVIOUS_SOURCE",
@@ -91,11 +187,17 @@ def evaluate_incremental_segment_source_continuity(
         prefix="SEGMENT_SOURCE_CONTINUITY_CURRENT_SOURCE",
     )
     bound_length = _validate_previous_source_binding(previous, historical)
+    historical_binding = _build_stroke_bindings(historical, historical_hashes)
+    current_binding = _build_stroke_bindings(current, current_hashes)
+    historical_prefix_binding = historical_binding[:bound_length]
 
     if len(current) < bound_length:
         return _decision(
             SegmentIncrementalSourceContinuityAction.BROKEN,
             bound_length,
+            previous_binding=previous_binding,
+            historical_bound_prefix_binding=historical_prefix_binding,
+            current_source_binding=current_binding,
         )
 
     identity_fields = ("logical_id", "stroke_id", "object_id", "revision")
@@ -109,15 +211,21 @@ def evaluate_incremental_segment_source_continuity(
             return _decision(
                 SegmentIncrementalSourceContinuityAction.BROKEN,
                 bound_length,
+                previous_binding=previous_binding,
+                historical_bound_prefix_binding=historical_prefix_binding,
+                current_source_binding=current_binding,
             )
 
     return _decision(
         SegmentIncrementalSourceContinuityAction.PRESERVED,
         bound_length,
+        previous_binding=previous_binding,
+        historical_bound_prefix_binding=historical_prefix_binding,
+        current_source_binding=current_binding,
     )
 
 
-def _validate_previous(previous: Segment) -> None:
+def _validate_previous(previous: Segment) -> SegmentIncrementalSourcePreviousBinding:
     if type(previous) is not Segment:
         raise SegmentIncrementalSourceContinuityError(
             "SEGMENT_SOURCE_CONTINUITY_PREVIOUS_TYPE_INVALID"
@@ -144,9 +252,17 @@ def _validate_previous(previous: Segment) -> None:
         raise SegmentIncrementalSourceContinuityError(
             "SEGMENT_SOURCE_CONTINUITY_PREVIOUS_DIRECTION_INVALID"
         )
-    _stable_content_hash(
+    previous_hash = _stable_content_hash(
         previous,
         "SEGMENT_SOURCE_CONTINUITY_PREVIOUS_CONTENT_HASH_INVALID",
+    )
+    return SegmentIncrementalSourcePreviousBinding(
+        logical_id=previous.logical_id,
+        object_id=previous.object_id,
+        segment_id=previous.segment_id,
+        revision=previous.revision,
+        content_hash=previous_hash,
+        stroke_ids=tuple(previous.stroke_ids),
     )
 
 
@@ -249,9 +365,48 @@ def _stable_content_hash(record: Segment | Stroke, reason_code: str) -> str:
     return first
 
 
+def _build_stroke_bindings(
+    source: tuple[Stroke, ...],
+    content_hashes: tuple[str, ...],
+) -> tuple[SegmentIncrementalSourceStrokeBinding, ...]:
+    return tuple(
+        SegmentIncrementalSourceStrokeBinding(
+            logical_id=stroke.logical_id,
+            object_id=stroke.object_id,
+            stroke_id=stroke.stroke_id,
+            revision=stroke.revision,
+            content_hash=content_hash,
+        )
+        for stroke, content_hash in zip(source, content_hashes)
+    )
+
+
+def _validate_text(value: object, reason_code: str) -> None:
+    if type(value) is not str or not value:
+        raise SegmentIncrementalSourceContinuityError(reason_code)
+
+
+def _validate_revision(value: object, reason_code: str) -> None:
+    if type(value) is not int or value < 1:
+        raise SegmentIncrementalSourceContinuityError(reason_code)
+
+
+def _validate_stroke_ids(value: object, reason_code: str) -> None:
+    if type(value) is not tuple or not value:
+        raise SegmentIncrementalSourceContinuityError(reason_code)
+    if any(type(stroke_id) is not str or not stroke_id for stroke_id in value):
+        raise SegmentIncrementalSourceContinuityError(reason_code)
+    if len(value) != len(set(value)):
+        raise SegmentIncrementalSourceContinuityError(reason_code)
+
+
 def _decision(
     action: SegmentIncrementalSourceContinuityAction,
     bound_prefix_length: int,
+    *,
+    previous_binding: SegmentIncrementalSourcePreviousBinding,
+    historical_bound_prefix_binding: tuple[SegmentIncrementalSourceStrokeBinding, ...],
+    current_source_binding: tuple[SegmentIncrementalSourceStrokeBinding, ...],
 ) -> SegmentIncrementalSourceContinuityDecision:
     return SegmentIncrementalSourceContinuityDecision(
         action=action,
@@ -261,4 +416,7 @@ def _decision(
             else "SOURCE_CONTINUITY_BROKEN"
         ),
         bound_prefix_length=bound_prefix_length,
+        previous_binding=previous_binding,
+        historical_bound_prefix_binding=historical_bound_prefix_binding,
+        current_source_binding=current_source_binding,
     )
