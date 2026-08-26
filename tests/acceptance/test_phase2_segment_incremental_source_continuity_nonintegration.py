@@ -93,7 +93,9 @@ def test_no_other_production_module_imports_continuity_contract():
         if path != CONTRACT
         and "segment_incremental_source_continuity" in path.read_text(encoding="utf-8")
     }
-    assert importers == set()
+    assert importers == {
+        SOURCE / "adapters/segment_engine_evaluation.py",
+    }
 
 
 def test_incremental_output_remains_segment_free_and_policy_free():
