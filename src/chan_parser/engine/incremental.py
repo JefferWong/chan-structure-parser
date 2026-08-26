@@ -380,7 +380,12 @@ class IncrementalEngine:
         self._segment_reference_result = None
         self._segment_reference_source_strokes = ()
         if self.segment_reference_enabled:
-            self._evaluate_segment_reference()
+            try:
+                self._evaluate_segment_reference()
+            except Exception:
+                self._segment_reference_result = None
+                self._segment_reference_source_strokes = ()
+                raise
         self._event_log.record(LifecycleEvent(
             event_type=EventType.CHECKPOINT_RESTORED,
             object_type="engine",
