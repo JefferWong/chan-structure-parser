@@ -22,6 +22,7 @@ __all__ = (
     "SegmentIncrementalSourceContinuityError",
     "SegmentIncrementalSourcePreviousBinding",
     "SegmentIncrementalSourceStrokeBinding",
+    "bind_incremental_segment_source_strokes",
     "evaluate_incremental_segment_source_continuity",
 )
 
@@ -39,6 +40,9 @@ class SegmentIncrementalSourceContinuityAction(str, Enum):
 
     PRESERVED = "PRESERVED"
     BROKEN = "BROKEN"
+
+
+_PUBLIC_SOURCE_BINDING_PREFIX = "SEGMENT_SOURCE_BINDING"
 
 
 @dataclass(frozen=True)
@@ -183,6 +187,18 @@ class SegmentIncrementalSourceContinuityDecision:
             raise SegmentIncrementalSourceContinuityError(
                 "SEGMENT_SOURCE_CONTINUITY_DECISION_BROKEN_EVIDENCE_IDENTICAL"
             )
+
+
+def bind_incremental_segment_source_strokes(
+    source_strokes: Sequence[Stroke],
+) -> tuple[SegmentIncrementalSourceStrokeBinding, ...]:
+    """Return ordered, self-describing evidence for one complete Stroke source."""
+
+    source, content_hashes = _validate_source_strokes(
+        source_strokes,
+        prefix=_PUBLIC_SOURCE_BINDING_PREFIX,
+    )
+    return _build_stroke_bindings(source, content_hashes)
 
 
 def evaluate_incremental_segment_source_continuity(

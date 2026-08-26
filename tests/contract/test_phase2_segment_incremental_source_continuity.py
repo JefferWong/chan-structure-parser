@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
+import inspect
 
 import pytest
 
@@ -11,11 +12,13 @@ from chan_parser.contracts.segment_incremental_source_continuity import (
     SegmentIncrementalSourceContinuityError,
     SegmentIncrementalSourcePreviousBinding,
     SegmentIncrementalSourceStrokeBinding,
+    bind_incremental_segment_source_strokes,
     evaluate_incremental_segment_source_continuity,
 )
 from chan_parser.domain.lifecycle import StructureStatus, StrokeDirection
 from chan_parser.domain.segment import Segment
 from chan_parser.domain.stroke import Stroke
+from chan_parser.contracts import segment_incremental_source_continuity as continuity_contract
 
 
 def strokes(count: int = 5) -> tuple[Stroke, ...]:
@@ -68,6 +71,249 @@ def evaluate(previous=_UNSET, historical=_UNSET, current=_UNSET):
         previous_source_strokes=strokes() if historical is _UNSET else historical,
         current_source_strokes=strokes() if current is _UNSET else current,
     )
+
+
+def test_public_binding_matches_continuity_current_and_historical_prefix():
+    historical = strokes(8)
+    current = strokes(8)
+    decision = evaluate(historical=historical, current=current)
+
+    direct_current = bind_incremental_segment_source_strokes(current)
+    direct_historical = bind_incremental_segment_source_strokes(historical)
+
+    assert direct_current == decision.current_source_binding
+    assert direct_historical[: decision.bound_prefix_length] == (
+        decision.historical_bound_prefix_binding
+    )
+
+
+def test_public_binding_preserves_order_and_returns_exact_public_type():
+    source = strokes(3)
+    binding = bind_incremental_segment_source_strokes(source)
+
+    assert type(binding) is tuple
+    assert all(type(item) is SegmentIncrementalSourceStrokeBinding for item in binding)
+    assert tuple(item.stroke_id for item in binding) == tuple(
+        stroke.stroke_id for stroke in source
+    )
+
+
+def test_public_binder_signature_and_export_boundary_are_fixed():
+    assert tuple(inspect.signature(bind_incremental_segment_source_strokes).parameters) == (
+        "source_strokes",
+    )
+    assert "bind_incremental_segment_source_strokes" in continuity_contract.__all__
+    assert "SegmentIncrementalSourceStrokeBinding" in continuity_contract.__all__
+    assert "_validate_source_strokes" not in continuity_contract.__all__
+    assert "_build_stroke_bindings" not in continuity_contract.__all__
+    assert "_stable_content_hash" not in continuity_contract.__all__
+
+
+def test_public_binding_does_not_claim_segment_engine_semantics():
+    nonalternating = list(strokes(3))
+    nonalternating[1] = replace(
+        nonalternating[1], direction=nonalternating[0].direction
+    )
+    noncontiguous = list(strokes(3))
+    noncontiguous[1] = replace(
+        noncontiguous[1], start_fractal_id="foreign-fractal"
+    )
+
+    assert len(bind_incremental_segment_source_strokes(tuple(nonalternating))) == 3
+    assert len(bind_incremental_segment_source_strokes(tuple(noncontiguous))) == 3
+
+
+def test_public_binding_rejects_stroke_subclass():
+    class StrokeSubclass(Stroke):
+        pass
+
+    source = list(strokes())
+    source[0] = StrokeSubclass(**source[0].__dict__)
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
+        bind_incremental_segment_source_strokes(tuple(source))
+    assert raised.value.reason_code == "SEGMENT_SOURCE_BINDING_REQUIRED"
+
+
+def test_public_binding_detaches_values_from_later_source_mutation():
+    source = list(strokes(3))
+    binding = bind_incremental_segment_source_strokes(tuple(source))
+    original_values = binding[0]
+
+    source[0].object_id = "mutated-object"
+    source[0].revision = 7
+    source[0].stroke_id = "mutated-stroke"
+
+    assert binding[0] == original_values
+    assert binding[0].object_id != source[0].object_id
+    assert binding[0].revision != source[0].revision
+    assert binding[0].stroke_id != source[0].stroke_id
+
+
+def test_public_binding_is_frozen_and_tuple_container_is_immutable():
+    binding = bind_incremental_segment_source_strokes(strokes(3))
+
+    with pytest.raises(FrozenInstanceError):
+        binding[0].stroke_id = "mutated"
+    with pytest.raises(AttributeError):
+        binding.append(binding[0])
+
+
+def test_public_binding_is_pure_and_deterministic():
+    original = strokes(5)
+    before = deepcopy(original)
+    first = bind_incremental_segment_source_strokes(original)
+    copied = bind_incremental_segment_source_strokes(deepcopy(original))
+    reconstructed = bind_incremental_segment_source_strokes(
+        tuple(replace(stroke) for stroke in original)
+    )
+
+    assert original == before
+    assert first == copied == reconstructed
+
+
+def test_public_binding_reuses_stable_hash_validation_without_extra_calls(monkeypatch):
+    source = strokes(5)
+    original_hash = Stroke.content_hash
+    calls = {}
+
+    def counted_hash(stroke):
+        calls[stroke.stroke_id] = calls.get(stroke.stroke_id, 0) + 1
+        return original_hash(stroke)
+
+    monkeypatch.setattr(Stroke, "content_hash", counted_hash)
+    binding = bind_incremental_segment_source_strokes(source)
+
+    assert calls == {stroke.stroke_id: 2 for stroke in source}
+    assert tuple(item.content_hash for item in binding) == tuple(
+        original_hash(stroke) for stroke in source
+    )
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        strokes(),
+        strokes(8),
+        tuple(
+            [
+                *strokes()[:3],
+                replace(strokes()[3], object_id="changed-suffix-r4", revision=2),
+                strokes()[4],
+            ]
+        ),
+    ],
+)
+def test_public_binding_matches_current_decision_for_multiple_valid_sources(current):
+    direct = bind_incremental_segment_source_strokes(current)
+    decision = evaluate(current=current)
+    assert direct == decision.current_source_binding
+
+
+def test_public_binding_matches_historical_prefix_with_suffix_mutation():
+    historical = list(strokes(8))
+    historical[-1] = replace(
+        historical[-1], object_id="historical-suffix-r9", revision=9
+    )
+    historical = tuple(historical)
+    decision = evaluate(historical=historical)
+    direct = bind_incremental_segment_source_strokes(historical)
+
+    assert direct[: decision.bound_prefix_length] == (
+        decision.historical_bound_prefix_binding
+    )
+
+
+@pytest.mark.parametrize(
+    "source,reason_code",
+    [
+        (None, "SEGMENT_SOURCE_BINDING_REQUIRED"),
+        ([], "SEGMENT_SOURCE_BINDING_REQUIRED"),
+        ((object(),), "SEGMENT_SOURCE_BINDING_REQUIRED"),
+        (
+            (replace(strokes()[1], status=StructureStatus.PROVISIONAL),),
+            "SEGMENT_SOURCE_BINDING_STATUS_INVALID",
+        ),
+        (
+            (replace(strokes()[1], invalidated_at_bar=9),),
+            "SEGMENT_SOURCE_BINDING_LIFECYCLE_INVALID",
+        ),
+        (
+            (replace(strokes()[1], replaced_by="replacement"),),
+            "SEGMENT_SOURCE_BINDING_LIFECYCLE_INVALID",
+        ),
+    ],
+)
+def test_public_binding_rejects_shape_and_lifecycle_inputs(source, reason_code):
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
+        bind_incremental_segment_source_strokes(source)
+    assert raised.value.reason_code == reason_code
+
+
+@pytest.mark.parametrize("field", ["logical_id", "object_id", "stroke_id"])
+def test_public_binding_rejects_empty_identity(field):
+    source = list(strokes())
+    source[1] = replace(source[1], **{field: ""})
+
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
+        bind_incremental_segment_source_strokes(tuple(source))
+    assert raised.value.reason_code == (
+        f"SEGMENT_SOURCE_BINDING_{field.upper()}_INVALID"
+    )
+
+
+@pytest.mark.parametrize("revision", [True, 0])
+def test_public_binding_rejects_invalid_revision(revision):
+    source = list(strokes())
+    source[1] = replace(source[1], revision=revision)
+
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
+        bind_incremental_segment_source_strokes(tuple(source))
+    assert raised.value.reason_code == "SEGMENT_SOURCE_BINDING_REVISION_INVALID"
+
+
+@pytest.mark.parametrize("field", ["logical_id", "object_id", "stroke_id"])
+def test_public_binding_rejects_duplicate_identity(field):
+    source = list(strokes())
+    source[1] = replace(source[1], **{field: getattr(source[0], field)})
+
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
+        bind_incremental_segment_source_strokes(tuple(source))
+    assert raised.value.reason_code == (
+        f"SEGMENT_SOURCE_BINDING_{field.upper()}_DUPLICATE"
+    )
+
+
+@pytest.mark.parametrize("bad_hash", ["", None, 1])
+def test_public_binding_rejects_invalid_content_hash(monkeypatch, bad_hash):
+    monkeypatch.setattr(Stroke, "content_hash", lambda _stroke: bad_hash)
+
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
+        bind_incremental_segment_source_strokes(strokes())
+    assert raised.value.reason_code == "SEGMENT_SOURCE_BINDING_CONTENT_HASH_INVALID"
+
+
+def test_public_binding_rejects_unstable_content_hash(monkeypatch):
+    calls = {}
+
+    def unstable_hash(stroke):
+        count = calls.get(stroke.stroke_id, 0) + 1
+        calls[stroke.stroke_id] = count
+        return "first" if count == 1 else "second"
+
+    monkeypatch.setattr(Stroke, "content_hash", unstable_hash)
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
+        bind_incremental_segment_source_strokes(strokes())
+    assert raised.value.reason_code == "SEGMENT_SOURCE_BINDING_CONTENT_HASH_INVALID"
+
+
+def test_public_binding_rejects_raising_content_hash(monkeypatch):
+    def raising_hash(_stroke):
+        raise RuntimeError("hash failure")
+
+    monkeypatch.setattr(Stroke, "content_hash", raising_hash)
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
+        bind_incremental_segment_source_strokes(strokes())
+    assert raised.value.reason_code == "SEGMENT_SOURCE_BINDING_CONTENT_HASH_INVALID"
 
 
 def test_identical_prefix_and_appended_suffix_are_preserved():
