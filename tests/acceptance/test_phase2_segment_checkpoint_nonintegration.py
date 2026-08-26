@@ -181,6 +181,7 @@ def test_incremental_runtime_does_not_integrate_segment_checkpoint_contract():
     forbidden_names = {
         "SegmentCheckpointState",
         "derive_segment_checkpoint_state",
+        "validate_segment_checkpoint_profile",
         "validate_segment_checkpoint_state",
     }
     assert not {
@@ -188,6 +189,30 @@ def test_incremental_runtime_does_not_integrate_segment_checkpoint_contract():
         for node in ast.walk(tree)
         if isinstance(node, ast.Name)
     }.intersection(forbidden_names)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "validate_segment_checkpoint_profile(value)",
+        "validate_segment_checkpoint_state(value)",
+        "derive_segment_checkpoint_state(value)",
+        "SegmentCheckpointState(value)",
+    ],
+)
+def test_incremental_checkpoint_contract_symbol_references_are_forbidden(source):
+    tree = ast.parse(source)
+    forbidden_names = {
+        "SegmentCheckpointState",
+        "derive_segment_checkpoint_state",
+        "validate_segment_checkpoint_profile",
+        "validate_segment_checkpoint_state",
+    }
+    assert not {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+    }.isdisjoint(forbidden_names)
 
 
 def test_profile_is_exact_contract_only_semantic_state_and_nonintegration():
