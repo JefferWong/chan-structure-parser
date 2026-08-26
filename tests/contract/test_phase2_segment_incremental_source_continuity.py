@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
+import inspect
 
 import pytest
 
@@ -17,6 +18,7 @@ from chan_parser.contracts.segment_incremental_source_continuity import (
 from chan_parser.domain.lifecycle import StructureStatus, StrokeDirection
 from chan_parser.domain.segment import Segment
 from chan_parser.domain.stroke import Stroke
+from chan_parser.contracts import segment_incremental_source_continuity as continuity_contract
 
 
 def strokes(count: int = 5) -> tuple[Stroke, ...]:
@@ -96,6 +98,66 @@ def test_public_binding_preserves_order_and_returns_exact_public_type():
     )
 
 
+def test_public_binder_signature_and_export_boundary_are_fixed():
+    assert tuple(inspect.signature(bind_incremental_segment_source_strokes).parameters) == (
+        "source_strokes",
+    )
+    assert "bind_incremental_segment_source_strokes" in continuity_contract.__all__
+    assert "SegmentIncrementalSourceStrokeBinding" in continuity_contract.__all__
+    assert "_validate_source_strokes" not in continuity_contract.__all__
+    assert "_build_stroke_bindings" not in continuity_contract.__all__
+    assert "_stable_content_hash" not in continuity_contract.__all__
+
+
+def test_public_binding_does_not_claim_segment_engine_semantics():
+    nonalternating = list(strokes(3))
+    nonalternating[1] = replace(
+        nonalternating[1], direction=nonalternating[0].direction
+    )
+    noncontiguous = list(strokes(3))
+    noncontiguous[1] = replace(
+        noncontiguous[1], start_fractal_id="foreign-fractal"
+    )
+
+    assert len(bind_incremental_segment_source_strokes(tuple(nonalternating))) == 3
+    assert len(bind_incremental_segment_source_strokes(tuple(noncontiguous))) == 3
+
+
+def test_public_binding_rejects_stroke_subclass():
+    class StrokeSubclass(Stroke):
+        pass
+
+    source = list(strokes())
+    source[0] = StrokeSubclass(**source[0].__dict__)
+    with pytest.raises(SegmentIncrementalSourceContinuityError) as raised:
+        bind_incremental_segment_source_strokes(tuple(source))
+    assert raised.value.reason_code == "SEGMENT_SOURCE_BINDING_REQUIRED"
+
+
+def test_public_binding_detaches_values_from_later_source_mutation():
+    source = list(strokes(3))
+    binding = bind_incremental_segment_source_strokes(tuple(source))
+    original_values = binding[0]
+
+    source[0].object_id = "mutated-object"
+    source[0].revision = 7
+    source[0].stroke_id = "mutated-stroke"
+
+    assert binding[0] == original_values
+    assert binding[0].object_id != source[0].object_id
+    assert binding[0].revision != source[0].revision
+    assert binding[0].stroke_id != source[0].stroke_id
+
+
+def test_public_binding_is_frozen_and_tuple_container_is_immutable():
+    binding = bind_incremental_segment_source_strokes(strokes(3))
+
+    with pytest.raises(FrozenInstanceError):
+        binding[0].stroke_id = "mutated"
+    with pytest.raises(AttributeError):
+        binding.append(binding[0])
+
+
 def test_public_binding_is_pure_and_deterministic():
     original = strokes(5)
     before = deepcopy(original)
@@ -124,6 +186,40 @@ def test_public_binding_reuses_stable_hash_validation_without_extra_calls(monkey
     assert calls == {stroke.stroke_id: 2 for stroke in source}
     assert tuple(item.content_hash for item in binding) == tuple(
         original_hash(stroke) for stroke in source
+    )
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        strokes(),
+        strokes(8),
+        tuple(
+            [
+                *strokes()[:3],
+                replace(strokes()[3], object_id="changed-suffix-r4", revision=2),
+                strokes()[4],
+            ]
+        ),
+    ],
+)
+def test_public_binding_matches_current_decision_for_multiple_valid_sources(current):
+    direct = bind_incremental_segment_source_strokes(current)
+    decision = evaluate(current=current)
+    assert direct == decision.current_source_binding
+
+
+def test_public_binding_matches_historical_prefix_with_suffix_mutation():
+    historical = list(strokes(8))
+    historical[-1] = replace(
+        historical[-1], object_id="historical-suffix-r9", revision=9
+    )
+    historical = tuple(historical)
+    decision = evaluate(historical=historical)
+    direct = bind_incremental_segment_source_strokes(historical)
+
+    assert direct[: decision.bound_prefix_length] == (
+        decision.historical_bound_prefix_binding
     )
 
 
