@@ -37,6 +37,19 @@ class Checkpoint:
     sha256: str
 
 
+@dataclass
+class _IncrementalReferenceAppendRollbackState:
+    raw_bars: list
+    merged_bars: list
+    fractals: list
+    strokes: list
+    event_snapshot: tuple
+    rebuild_count: int
+    last_rebuild: dict
+    last_engine_inputs: dict
+    max_engine_inputs: dict
+
+
 class IncrementalEngine:
     def __init__(self, profile: dict, *, segment_reference_enabled: bool = False):
         self.profile = profile
@@ -79,6 +92,11 @@ class IncrementalEngine:
         if not new_bars:
             return self.get_current_state()
         self._validate_append(new_bars)
+        rollback_state = (
+            self._capture_reference_append_rollback_state()
+            if self.segment_reference_enabled
+            else None
+        )
         combined = self._raw_bars + list(new_bars)
 
         if not self._raw_bars or not self._merged_bars:
@@ -87,11 +105,48 @@ class IncrementalEngine:
             self._bounded_reconcile(combined, len(new_bars))
 
         if self.segment_reference_enabled:
-            self._evaluate_segment_reference()
+            try:
+                self._evaluate_segment_reference()
+            except Exception:
+                try:
+                    self._restore_reference_append_rollback_state(rollback_state)
+                finally:
+                    self._segment_reference_result = None
+                    self._segment_reference_source_strokes = ()
+                raise
         self._store_historical_snapshot(len(self._raw_bars), self._snapshot_payload())
         if self.checkpoint_interval and len(self._raw_bars) % self.checkpoint_interval == 0:
             self.create_checkpoint()
         return self.get_current_state()
+
+    def _capture_reference_append_rollback_state(
+        self,
+    ) -> _IncrementalReferenceAppendRollbackState:
+        return _IncrementalReferenceAppendRollbackState(
+            raw_bars=self._raw_bars,
+            merged_bars=self._merged_bars,
+            fractals=self._fractals,
+            strokes=self._strokes,
+            event_snapshot=self._event_log.snapshot(),
+            rebuild_count=self._rebuild_count,
+            last_rebuild=copy.deepcopy(self._last_rebuild),
+            last_engine_inputs=copy.deepcopy(self._last_engine_inputs),
+            max_engine_inputs=copy.deepcopy(self._max_engine_inputs),
+        )
+
+    def _restore_reference_append_rollback_state(
+        self,
+        state: _IncrementalReferenceAppendRollbackState,
+    ) -> None:
+        self._raw_bars = state.raw_bars
+        self._merged_bars = state.merged_bars
+        self._fractals = state.fractals
+        self._strokes = state.strokes
+        self._event_log.restore(state.event_snapshot)
+        self._rebuild_count = state.rebuild_count
+        self._last_rebuild = copy.deepcopy(state.last_rebuild)
+        self._last_engine_inputs = copy.deepcopy(state.last_engine_inputs)
+        self._max_engine_inputs = copy.deepcopy(state.max_engine_inputs)
 
     def _bootstrap(self, combined: list[RawBar]) -> None:
         valid = [b for b in combined if b.is_valid]
