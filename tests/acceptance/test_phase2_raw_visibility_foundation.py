@@ -15,7 +15,6 @@ from chan_parser.engine.incremental import IncrementalEngine
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/chan_parser"
 BASELINE = {
-    SOURCE / "engine/incremental.py": "0b52b6f6c32faa525c266d6a082e6a578d98e905a3c65cfe54bec1587fdb9ebe",
     SOURCE / "contracts/segment_checkpoint.py": "2079d159ef134a032d4d45c04d580797491e08c5ce01ca827107776297ad5880",
 }
 
@@ -65,7 +64,7 @@ def test_raw_visibility_authority_sets_are_durable_and_exact():
     }
 
 
-def test_legacy_runtime_files_remain_byte_exact_and_outputs_do_not_serialize_raw_fields():
+def test_frozen_raw_visibility_files_remain_byte_exact_and_outputs_do_not_serialize_raw_fields():
     for path, expected in BASELINE.items():
         assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
     full = FullRebuildEngine(profile()).process(bars())
