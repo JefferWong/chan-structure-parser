@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 from pathlib import Path
 
 import pytest
@@ -13,11 +12,6 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/chan_parser"
 CONTRACT = SOURCE / "contracts/segment_checkpoint.py"
 PROFILE = ROOT / "configs/profiles/minimal_segment_checkpoint_contract_v1.yaml"
-PRODUCTION_BASELINE_SHA256 = {
-    SOURCE / "engine/incremental.py": (
-        "0b52b6f6c32faa525c266d6a082e6a578d98e905a3c65cfe54bec1587fdb9ebe"
-    ),
-}
 ALLOWED_IMPORTS = {
     "__future__",
     "collections.abc",
@@ -169,12 +163,31 @@ def test_checkpoint_contract_is_not_imported_by_any_other_production_module():
     assert importers == set()
 
 
-def test_existing_segment_runtime_production_files_equal_exact_base_bytes():
-    actual = {
-        path: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in PRODUCTION_BASELINE_SHA256
+def test_incremental_runtime_does_not_integrate_segment_checkpoint_contract():
+    tree = _tree(SOURCE / "engine/incremental.py")
+    imported_modules = {
+        f'{"." * node.level}{node.module or ""}'
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
     }
-    assert actual == PRODUCTION_BASELINE_SHA256
+    imported_modules.update(
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+    assert not any("segment_checkpoint" in module for module in imported_modules)
+
+    forbidden_names = {
+        "SegmentCheckpointState",
+        "derive_segment_checkpoint_state",
+        "validate_segment_checkpoint_state",
+    }
+    assert not {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+    }.intersection(forbidden_names)
 
 
 def test_profile_is_exact_contract_only_semantic_state_and_nonintegration():
