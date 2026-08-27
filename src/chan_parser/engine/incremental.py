@@ -20,7 +20,7 @@ from ..contracts.segment_checkpoint import (
     SegmentCheckpointState,
     derive_segment_checkpoint_state,
     validate_segment_checkpoint_state,
-    _production_segment_checkpoint_profile,
+    production_segment_checkpoint_profile,
 )
 from ..contracts.segment_incremental_materialization import (
     materialize_incremental_segment,
@@ -145,7 +145,7 @@ class IncrementalEngine:
         self._segment_lifecycle_emitter = SegmentLifecycleEmitter(
             SegmentLifecycleEmitter.production_profile()
         )
-        self._segment_checkpoint_profile = _production_segment_checkpoint_profile()
+        self._segment_checkpoint_profile = production_segment_checkpoint_profile()
 
     def append_one(self, raw_bar: RawBar) -> dict[str, Any]:
         return self.append_batch([raw_bar])
@@ -225,6 +225,16 @@ class IncrementalEngine:
         previous = self._segments[0] if self._segments else None
         if current.reason_code == "SEGMENT_SECOND_CASE_PENDING":
             raise ValueError("SEGMENT_SECOND_CASE_PENDING")
+        if (
+            previous is None
+            and current.segment is not None
+            and (
+                type(current.segment.revision) is not int
+                or current.segment.revision != 1
+                or current.segment.object_id != f"{current.segment.segment_id}_r1"
+            )
+        ):
+            raise ValueError("SEGMENT_FIRST_CASE_CANDIDATE_R1_REQUIRED")
         if current.segment is None:
             if previous is None:
                 self._segments = []
@@ -324,7 +334,7 @@ class IncrementalEngine:
                 source_strokes=cp.segment_source_strokes,
                 segment=segment,
                 lifecycle_events=events,
-                allow_revisions=True,
+                profile=self._segment_checkpoint_profile,
             )
         except SegmentCheckpointContractError as error:
             raise ValueError(str(error)) from error
@@ -549,7 +559,7 @@ class IncrementalEngine:
                 source_strokes=self._segment_source_strokes,
                 segment=segment,
                 lifecycle_events=segment_events,
-                allow_revisions=True,
+                profile=self._segment_checkpoint_profile,
             )
         cp = Checkpoint(
             copy.deepcopy(self._raw_bars),
@@ -614,7 +624,7 @@ class IncrementalEngine:
                         source_strokes=source,
                         segment=segment,
                         lifecycle_events=events,
-                        allow_revisions=True,
+                        profile=self._segment_checkpoint_profile,
                     )
                 except SegmentCheckpointContractError as error:
                     raise ValueError(str(error)) from error

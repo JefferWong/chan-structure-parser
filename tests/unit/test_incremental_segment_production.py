@@ -14,6 +14,7 @@ from chan_parser.domain.raw_bar import RawBar
 from chan_parser.domain.stroke import Stroke
 from chan_parser.engine.incremental import IncrementalEngine
 from chan_parser.engine.segment import SegmentEngine
+from chan_parser.engine.segment import SegmentEngineResult
 from chan_parser.audit.event_log import EventLog
 from chan_parser.engine.segment_lifecycle_emitter import SegmentLifecycleEmitter
 
@@ -180,3 +181,243 @@ def test_production_profile_enables_only_incremental_integration():
     assert SegmentLifecycleEmitter.reference_profile()["integration"][
         "full_incremental_integration_enabled"
     ] is False
+
+
+def _engine_sequence(sources, results):
+    engine = prepared(sources[0], production=True)
+    engine.checkpoint_interval = 0
+    current = {"source": sources[0]}
+    engine.stroke_engine.process = lambda fractals, merged, raw_count: (current["source"], [])
+    calls = iter(results)
+    original = SegmentEngine.process_primary
+    SegmentEngine.process_primary = lambda self, source, **kwargs: next(calls)
+    return engine, current, original
+
+
+def test_incremental_reuse_has_zero_segment_lifecycle_delta():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    canonical = SegmentEngine(SegmentEngine.reference_profile()).process_primary(
+        source, sequence_id="incremental:primary"
+    )
+    engine, _, original = _engine_sequence([source], [canonical, canonical])
+    try:
+        engine.append_batch(bars(0))
+        before = len([e for e in engine.get_current_state()["events"] if e["object_type"] == "segment"])
+        state = engine.append_batch(bars(1))
+    finally:
+        SegmentEngine.process_primary = original
+    after = len([e for e in state["events"] if e["object_type"] == "segment"])
+    assert after == before
+    assert state["structures"]["segments"][0]["revision"] == 1
+
+
+def test_incremental_revise_then_reuse_uses_rn_materialization():
+    source1 = strokes([0, 10, 4, 12, 6, 11, 5])
+    source2 = deepcopy(source1)
+    for stroke in source2:
+        stroke.start_price += 1
+        stroke.end_price += 1
+        stroke.max_price += 1
+        stroke.min_price += 1
+    first = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source1, sequence_id="incremental:primary")
+    second = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source2, sequence_id="incremental:primary")
+    engine, current, original = _engine_sequence([source1, source2], [first, second, second])
+    try:
+        engine.append_batch(bars(0))
+        current["source"] = source2
+        revised = engine.append_batch(bars(1))
+        before = len([e for e in revised["events"] if e["object_type"] == "segment"])
+        reused = engine.append_batch(bars(2))
+    finally:
+        SegmentEngine.process_primary = original
+    segment = reused["structures"]["segments"][0]
+    delta = [e for e in reused["events"] if e["object_type"] == "segment"][before:]
+    assert segment["logical_id"] == first.segment.logical_id
+    assert segment["revision"] == 2
+    assert segment["object_id"] == f"{second.segment.segment_id}_r2"
+    assert [(e["event_type"], e["object_id"], e["replaced_by"]) for e in
+            revised["events"] if e["object_type"] == "segment"][-3:] == [
+        ("OBJECT_CREATED", segment["object_id"], None),
+        ("OBJECT_CONFIRMED", segment["object_id"], None),
+        ("STRUCTURE_REPLACED", first.segment.object_id, segment["object_id"]),
+    ]
+    assert delta == []
+
+
+def test_incremental_replace_required_uses_pr24_materializer():
+    source1 = strokes([0, 10, 4, 12, 6, 11, 5])
+    source2 = deepcopy(source1)
+    for i, stroke in enumerate(source2):
+        stroke.logical_id = f"other:{i}"
+        stroke.start_bar_index += 10
+        stroke.end_bar_index += 10
+        stroke.created_at_bar += 10
+        stroke.confirmed_at_bar += 10
+    first = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source1, sequence_id="incremental:primary")
+    second = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source2, sequence_id="incremental:primary")
+    engine, current, original = _engine_sequence([source1, source2], [first, second])
+    try:
+        engine.append_batch(bars(0))
+        current["source"] = source2
+        state = engine.append_batch(bars(1))
+    finally:
+        SegmentEngine.process_primary = original
+    events = [e for e in state["events"] if e["object_type"] == "segment"][-3:]
+    assert state["structures"]["segments"][0]["logical_id"] != first.segment.logical_id
+    assert state["structures"]["segments"][0]["revision"] == 1
+    assert [e["event_type"] for e in events] == ["OBJECT_CREATED", "OBJECT_CONFIRMED", "STRUCTURE_REPLACED"]
+    assert events[-1]["reason_code"] == "SEGMENT_RECONCILIATION_LOGICAL_ID_CHANGED"
+
+
+@pytest.mark.parametrize("reason", ["SEGMENT_FEATURE_WINDOW_INCOMPLETE", "SEGMENT_PRIMARY_FRACTAL_NOT_FOUND"])
+def test_incremental_transient_preserves_previous_formal_state(reason):
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    first = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source, sequence_id="incremental:primary")
+    transient = SegmentEngineResult(reason, source[0].direction, ())
+    engine, _, original = _engine_sequence([source], [first, transient])
+    try:
+        engine.append_batch(bars(0))
+        before = deepcopy(engine._segments[0].to_dict())
+        state = engine.append_batch(bars(1))
+    finally:
+        SegmentEngine.process_primary = original
+    assert engine._segments[0].to_dict() == before
+    assert not [e for e in state["events"] if e["object_type"] == "segment"][2:]
+
+
+def test_incremental_transient_broken_rolls_back_all_append_state():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    first = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source, sequence_id="incremental:primary")
+    transient = SegmentEngineResult("SEGMENT_FEATURE_WINDOW_INCOMPLETE", source[0].direction, ())
+    broken_source = deepcopy(source)
+    broken_source[0].logical_id = "broken:0"
+    engine, current, original = _engine_sequence([source, broken_source], [first, transient])
+    try:
+        engine.append_batch(bars(0))
+        before = (engine.get_current_state(), deepcopy(engine._checkpoints), engine._next_checkpoint_id)
+        current["source"] = broken_source
+        with pytest.raises(ValueError, match="SEGMENT_TRANSIENT_SOURCE_CONTINUITY_BROKEN"):
+            engine.append_batch(bars(1))
+    finally:
+        SegmentEngine.process_primary = original
+    assert engine.get_current_state() == before[0]
+    assert engine._checkpoints == before[1]
+    assert engine._next_checkpoint_id == before[2]
+
+
+def test_second_case_with_previous_rolls_back_and_emits_nothing():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    first = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source, sequence_id="incremental:primary")
+    pending = SegmentEngineResult("SEGMENT_SECOND_CASE_PENDING", source[0].direction, (), pending_second_case=object())
+    engine, _, original = _engine_sequence([source], [first, pending])
+    try:
+        engine.append_batch(bars(0))
+        before = engine.get_current_state()
+        with pytest.raises(ValueError, match="SEGMENT_SECOND_CASE_PENDING"):
+            engine.append_batch(bars(1))
+    finally:
+        SegmentEngine.process_primary = original
+    assert engine.get_current_state() == before
+
+
+def test_lifecycle_sentinel_identity_is_preserved_by_append_rollback():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    engine = prepared(source, production=True)
+    sentinel = RuntimeError("sentinel")
+    engine._segment_lifecycle_emitter.emit = lambda **kwargs: (_ for _ in ()).throw(sentinel)
+    before = engine.get_current_state()
+    with pytest.raises(RuntimeError) as raised:
+        engine.append_batch(bars(0))
+    assert raised.value is sentinel
+    assert engine.get_current_state() == before
+
+
+def test_production_rn_checkpoint_uses_versioned_profile():
+    source1 = strokes([0, 10, 4, 12, 6, 11, 5])
+    source2 = deepcopy(source1)
+    for stroke in source2:
+        stroke.start_price += 1; stroke.end_price += 1
+        stroke.max_price += 1; stroke.min_price += 1
+    first = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source1, sequence_id="incremental:primary")
+    second = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source2, sequence_id="incremental:primary")
+    engine, current, original = _engine_sequence([source1, source2], [first, second])
+    try:
+        engine.append_batch(bars(0)); current["source"] = source2; engine.append_batch(bars(1))
+    finally:
+        SegmentEngine.process_primary = original
+    checkpoint = engine.create_checkpoint()
+    expected = deepcopy(engine._segments[0].to_dict())
+    engine._segments = []
+    restored = engine.resume_from_checkpoint(checkpoint)
+    assert restored["structures"]["segments"] == [expected]
+
+
+def test_production_replacement_r1_checkpoint_restores_without_duplicate_events():
+    source1 = strokes([0, 10, 4, 12, 6, 11, 5])
+    source2 = deepcopy(source1)
+    for i, stroke in enumerate(source2):
+        stroke.logical_id = f"other:{i}"
+        stroke.start_bar_index += 10; stroke.end_bar_index += 10
+        stroke.created_at_bar += 10; stroke.confirmed_at_bar += 10
+    first = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source1, sequence_id="incremental:primary")
+    second = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source2, sequence_id="incremental:primary")
+    engine, current, original = _engine_sequence([source1, source2], [first, second])
+    try:
+        engine.append_batch(bars(0)); current["source"] = source2; engine.append_batch(bars(1))
+    finally:
+        SegmentEngine.process_primary = original
+    checkpoint = engine.create_checkpoint()
+    expected = deepcopy(engine._segments[0].to_dict())
+    before_events = [e for e in engine.get_current_state()["events"] if e["object_type"] == "segment"]
+    engine._segments = []
+    restored = engine.resume_from_checkpoint(checkpoint)
+    assert restored["structures"]["segments"] == [expected]
+    assert [e for e in restored["events"] if e["object_type"] == "segment"] == before_events
+
+
+def test_checkpoint_source_and_semantic_tamper_fail_before_live_mutation():
+    engine = prepared(strokes([0, 10, 4, 12, 6, 11, 5]), production=True)
+    engine.checkpoint_interval = 0
+    engine.append_batch(bars(0))
+    checkpoint = engine.create_checkpoint()
+    before = engine.get_current_state()
+    cp = engine._checkpoints[checkpoint]
+    cp.segment_source_strokes = (replace(cp.segment_source_strokes[0], start_price=999),) + cp.segment_source_strokes[1:]
+    with pytest.raises(ValueError):
+        engine.resume_from_checkpoint(checkpoint)
+    assert engine.get_current_state() == before
+
+    checkpoint = engine.create_checkpoint()
+    before = engine.get_current_state()
+    cp = engine._checkpoints[checkpoint]
+    cp.segment_checkpoint_state = replace(cp.segment_checkpoint_state, state_key="tampered")
+    with pytest.raises(ValueError):
+        engine.resume_from_checkpoint(checkpoint)
+    assert engine.get_current_state() == before
+
+
+def test_checkpoint_semantic_state_requires_exactly_one_segment():
+    engine = prepared(strokes([0, 10, 4, 12, 6, 11, 5]), production=True)
+    engine.checkpoint_interval = 0
+    engine.append_batch(bars(0))
+    checkpoint = engine.create_checkpoint()
+    cp = engine._checkpoints[checkpoint]
+    cp.segments = []
+    with pytest.raises(ValueError, match="SEGMENT_CHECKPOINT_STATE_MISSING"):
+        engine.resume_from_checkpoint(checkpoint)
+
+
+def test_no_previous_rejects_non_r1_candidate():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    canonical = SegmentEngine(SegmentEngine.reference_profile()).process_primary(
+        source, sequence_id="incremental:primary"
+    )
+    forged = replace(canonical.segment, revision=2,
+                     object_id=f"{canonical.segment.segment_id}_r2")
+    engine, _, original = _engine_sequence([source], [replace(canonical, segment=forged)])
+    try:
+        with pytest.raises(ValueError, match="SEGMENT_FIRST_CASE_CANDIDATE_R1_REQUIRED"):
+            engine.append_batch(bars(0))
+    finally:
+        SegmentEngine.process_primary = original
+    assert engine._segments == []

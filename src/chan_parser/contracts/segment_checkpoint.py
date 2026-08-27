@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from copy import deepcopy
 import hashlib
 from itertools import pairwise
 import json
@@ -26,6 +27,7 @@ __all__ = (
     "validate_segment_checkpoint_profile",
     "derive_segment_checkpoint_state",
     "validate_segment_checkpoint_state",
+    "production_segment_checkpoint_profile",
 )
 
 
@@ -174,9 +176,9 @@ def validate_segment_checkpoint_profile(profile: Mapping[str, Any]) -> None:
     _validate_exact_mapping(profile, _EXPECTED_PROFILE, "profile")
 
 
-def _production_segment_checkpoint_profile() -> dict[str, Any]:
+def production_segment_checkpoint_profile() -> dict[str, Any]:
     """Return the narrow PR25 revision-aware integration profile."""
-    profile = dict(_EXPECTED_PROFILE)
+    profile = deepcopy(_EXPECTED_PROFILE)
     profile["profile_id"] = "minimal_segment_checkpoint_production_v2"
     profile["profile_version"] = "0.2.0"
     profile["status"] = "INCREMENTAL_PRODUCTION"
@@ -192,6 +194,20 @@ def _production_segment_checkpoint_profile() -> dict[str, Any]:
     return profile
 
 
+def _validated_runtime_profile(profile: Mapping[str, Any] | None) -> dict[str, Any]:
+    candidate = _EXPECTED_PROFILE if profile is None else profile
+    if candidate == _EXPECTED_PROFILE:
+        return deepcopy(_EXPECTED_PROFILE)
+    production = production_segment_checkpoint_profile()
+    if candidate == production:
+        return production
+    raise SegmentCheckpointContractError("SEGMENT_CHECKPOINT_PROFILE_INVALID")
+
+
+def _profile_allows_revisions(profile: Mapping[str, Any]) -> bool:
+    return profile == production_segment_checkpoint_profile()
+
+
 def derive_segment_checkpoint_state(
     *,
     outcome_code: str,
@@ -199,12 +215,11 @@ def derive_segment_checkpoint_state(
     source_strokes: Sequence[Stroke],
     segment: Segment | None,
     lifecycle_events: Sequence[Mapping[str, Any]],
-    allow_revisions: bool = False,
+    profile: Mapping[str, Any] | None = None,
 ) -> SegmentCheckpointState:
     """Derive an immutable envelope without mutating or re-running producers."""
 
-    if type(allow_revisions) is not bool:
-        raise TypeError("allow_revisions must be a bool")
+    checkpoint_profile = _validated_runtime_profile(profile)
     if type(outcome_code) is not str or outcome_code not in _SUPPORTED_OUTCOMES:
         raise SegmentCheckpointContractError(
             "SEGMENT_CHECKPOINT_OUTCOME_UNSUPPORTED"
@@ -243,7 +258,7 @@ def derive_segment_checkpoint_state(
             segment,
             candidate_direction=candidate_direction,
             source=source,
-            allow_revisions=allow_revisions,
+            revision_aware=_profile_allows_revisions(checkpoint_profile),
         )
         intent_keys, binding_key, event_hashes = _validate_complete_lifecycle(
             events,
@@ -275,12 +290,11 @@ def validate_segment_checkpoint_state(
     source_strokes: Sequence[Stroke],
     segment: Segment | None,
     lifecycle_events: Sequence[Mapping[str, Any]],
-    allow_revisions: bool = False,
+    profile: Mapping[str, Any] | None = None,
 ) -> None:
     """Require exact equality with a freshly derived canonical envelope."""
 
-    if type(allow_revisions) is not bool:
-        raise TypeError("allow_revisions must be a bool")
+    checkpoint_profile = _validated_runtime_profile(profile)
     if type(state) is not SegmentCheckpointState:
         raise SegmentCheckpointContractError(
             "SEGMENT_CHECKPOINT_STATE_REQUIRED"
@@ -291,7 +305,7 @@ def validate_segment_checkpoint_state(
         source_strokes=source_strokes,
         segment=segment,
         lifecycle_events=lifecycle_events,
-        allow_revisions=allow_revisions,
+        profile=checkpoint_profile,
     )
     if state != canonical:
         raise SegmentCheckpointContractError(
@@ -450,7 +464,7 @@ def _validate_first_case_segment(
     *,
     candidate_direction: StrokeDirection,
     source: tuple[Stroke, ...],
-    allow_revisions: bool = False,
+    revision_aware: bool = False,
 ) -> Segment:
     if type(segment) is not Segment:
         raise SegmentCheckpointContractError(
@@ -510,10 +524,10 @@ def _validate_first_case_segment(
         "segment_id": expected_segment_id,
         "object_id": (
             f"{expected_segment_id}_r{segment.revision}"
-            if allow_revisions else f"{expected_segment_id}_r1"
+            if revision_aware else f"{expected_segment_id}_r1"
         ),
         "logical_id": f"segment:{first.logical_id}->{boundary.logical_id}",
-        "revision": segment.revision if allow_revisions else 1,
+        "revision": segment.revision if revision_aware else 1,
         "rule_profile": "minimal_segment_engine_core_v1",
         "rule_version": "0.1.0",
         "start_stroke_id": first.stroke_id,

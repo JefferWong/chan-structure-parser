@@ -22,6 +22,7 @@ ALLOWED_IMPORTS = {
     "math",
     "re",
     "typing",
+    "copy",
     "..domain.lifecycle",
     "..domain.segment",
     "..domain.stroke",
@@ -136,6 +137,7 @@ def test_public_contract_surface_and_all_are_exact():
         "validate_segment_checkpoint_profile",
         "derive_segment_checkpoint_state",
         "validate_segment_checkpoint_state",
+        "production_segment_checkpoint_profile",
     }
     all_assignments = [
         node
@@ -150,6 +152,7 @@ def test_public_contract_surface_and_all_are_exact():
         "validate_segment_checkpoint_profile",
         "derive_segment_checkpoint_state",
         "validate_segment_checkpoint_state",
+        "production_segment_checkpoint_profile",
     )
 
 
