@@ -113,6 +113,29 @@ def test_reuse_preserves_authenticated_identity_and_owns_mutable_storage():
     assert (previous, candidate) == before
 
 
+def test_reuse_r2_preserves_previous_identity_over_fresh_r1_candidate():
+    previous = replace(
+        candidate_segment(),
+        revision=2,
+        object_id="segment_000001_000004_U_r2",
+    )
+    candidate = candidate_segment()
+    before = deepcopy((previous, candidate))
+    result = materialize(previous, candidate)
+    materialized = result.materialized_segment
+
+    assert result.action is SegmentIncrementalReconciliationAction.REUSE
+    assert materialized.object_id == previous.object_id
+    assert materialized.revision == previous.revision
+    assert materialized.logical_id == previous.logical_id
+    assert materialized.object_id != candidate.object_id
+    assert materialized.revision != candidate.revision
+    assert materialized is not previous
+    assert materialized.stroke_ids is not previous.stroke_ids
+    assert materialized.stroke_ids is not candidate.stroke_ids
+    assert (previous, candidate) == before
+
+
 def test_revise_derives_next_canonical_identity_and_preserves_candidate_semantics():
     previous = replace(candidate_segment(end_price=3.0), revision=2, object_id="segment_000001_000004_U_r2")
     candidate = candidate_segment(end_price=8.0)
@@ -171,6 +194,47 @@ def test_repeated_materialization_is_deterministic_and_does_not_publish_candidat
     assert first == second
     assert first.materialized_object_id == "segment_000001_000004_U_r3"
     assert first.materialized_object_id != candidate.object_id
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "declared_object_id",
+        "declared_logical_id",
+        "declared_revision",
+        "embedded_object_id",
+        "embedded_logical_id",
+        "embedded_revision",
+        "declared_content_hash",
+    ],
+)
+def test_materialization_result_rejects_direct_envelope_tampering(tamper):
+    result = materialize(candidate_segment(), candidate_segment())
+    materialized = result.materialized_segment
+    with pytest.raises(SegmentIncrementalMaterializationError):
+        if tamper == "declared_object_id":
+            replace(result, materialized_object_id="forged-object")
+        elif tamper == "declared_logical_id":
+            replace(result, materialized_logical_id="forged-logical")
+        elif tamper == "declared_revision":
+            replace(result, materialized_revision=9)
+        elif tamper == "embedded_object_id":
+            replace(
+                result,
+                materialized_segment=replace(materialized, object_id="forged-object"),
+            )
+        elif tamper == "embedded_logical_id":
+            replace(
+                result,
+                materialized_segment=replace(materialized, logical_id="forged-logical"),
+            )
+        elif tamper == "embedded_revision":
+            replace(
+                result,
+                materialized_segment=replace(materialized, revision=9),
+            )
+        else:
+            replace(result, materialized_content_hash="forged-hash")
 
 
 @pytest.mark.parametrize("case", [

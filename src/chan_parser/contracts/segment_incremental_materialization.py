@@ -100,17 +100,41 @@ class SegmentIncrementalMaterializationResult:
                 "SEGMENT_MATERIALIZATION_REVISION_INVALID"
             )
         decision = self.canonical_reconciliation
+        materialized = self.materialized_segment
         if (
             self.previous_logical_id != decision.previous_logical_id
             or self.previous_object_id != decision.previous_object_id
             or self.previous_revision != decision.previous_revision
             or self.previous_content_hash != decision.previous_content_hash
             or self.materialized_logical_id != decision.candidate_logical_id
+            or self.materialized_logical_id != materialized.logical_id
+            or self.materialized_object_id != materialized.object_id
+            or self.materialized_revision != materialized.revision
             or self.materialized_revision != decision.next_revision
-            or self.materialized_content_hash != self.materialized_segment.content_hash()
+            or self.materialized_content_hash != materialized.content_hash()
+            or self.materialized_content_hash != decision.candidate_content_hash
         ):
             raise SegmentIncrementalMaterializationError(
                 "SEGMENT_MATERIALIZATION_EVIDENCE_MISMATCH"
+            )
+        if self.action is SegmentIncrementalReconciliationAction.REUSE:
+            valid_action_evidence = (
+                self.materialized_logical_id == self.previous_logical_id
+                and self.materialized_object_id == self.previous_object_id
+                and self.materialized_revision == self.previous_revision
+                and self.materialized_content_hash == self.previous_content_hash
+            )
+        else:
+            valid_action_evidence = (
+                self.materialized_logical_id == self.previous_logical_id
+                and self.materialized_revision == self.previous_revision + 1
+                and self.materialized_revision == decision.next_revision
+                and self.materialized_object_id
+                == f"{materialized.segment_id}_r{self.materialized_revision}"
+            )
+        if not valid_action_evidence:
+            raise SegmentIncrementalMaterializationError(
+                "SEGMENT_MATERIALIZATION_ACTION_EVIDENCE_INVALID"
             )
 
 
