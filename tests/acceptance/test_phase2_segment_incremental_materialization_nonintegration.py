@@ -90,7 +90,7 @@ def test_materializer_is_pure_and_runtime_disconnected():
     ):
         assert forbidden not in text
     for path in SOURCE.rglob("*.py"):
-        if path != MATERIALIZER:
+        if path not in {MATERIALIZER, SOURCE / "engine/incremental.py"}:
             assert "segment_incremental_materialization" not in path.read_text(
                 encoding="utf-8"
             )

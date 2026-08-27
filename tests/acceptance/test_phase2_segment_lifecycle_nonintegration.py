@@ -150,6 +150,7 @@ def test_segment_engine_does_not_import_lifecycle_contract():
             EMITTER,
             ROOT / "src/chan_parser/engine/full_rebuild.py",
             ROOT / "src/chan_parser/contracts/segment_incremental_replacement.py",
+            ROOT / "src/chan_parser/engine/incremental.py",
         }:
             continue
         assert "segment_lifecycle" not in path.read_text(encoding="utf-8"), path
@@ -160,8 +161,8 @@ def test_incremental_may_import_segment_engine_only_for_reference_evaluation():
     assert "SegmentEngine" in text
     assert "from .segment import SegmentEngine" in text
     assert "segment_rules" not in text
-    assert "SegmentLifecycleEmitter" not in text
-    assert "segment_checkpoint" not in text
+    assert "SegmentLifecycleEmitter" in text
+    assert "segment_checkpoint" in text
 
 
 def test_engine_package_does_not_export_segment_engine():

@@ -15,6 +15,25 @@ from .fractal import FractalEngine
 from .inclusion import InclusionEngine
 from .segment import SegmentEngine, SegmentEngineResult
 from .stroke import StrokeEngine
+from ..contracts.segment_checkpoint import (
+    SegmentCheckpointContractError,
+    SegmentCheckpointState,
+    derive_segment_checkpoint_state,
+    validate_segment_checkpoint_state,
+)
+from ..contracts.segment_incremental_materialization import (
+    materialize_incremental_segment,
+)
+from ..contracts.segment_incremental_reconciliation import (
+    SegmentIncrementalReconciliationAction,
+    SegmentIncrementalTransientPolicyAction,
+    evaluate_incremental_segment_transient_policy,
+    reconcile_incremental_segment,
+)
+from ..contracts.segment_incremental_replacement import (
+    materialize_incremental_segment_replacement,
+)
+from .segment_lifecycle_emitter import SegmentLifecycleEmitter
 
 
 class RebuildBoundaryExceeded(RuntimeError):
@@ -35,6 +54,9 @@ class Checkpoint:
     last_engine_inputs: dict
     max_engine_inputs: dict
     sha256: str
+    segments: list = None
+    segment_source_strokes: tuple = ()
+    segment_checkpoint_state: SegmentCheckpointState | None = None
 
 
 @dataclass
@@ -50,12 +72,45 @@ class _IncrementalReferenceAppendRollbackState:
     max_engine_inputs: dict
 
 
+@dataclass
+class _IncrementalProductionRollbackState(_IncrementalReferenceAppendRollbackState):
+    segments: list
+    segment_source_strokes: tuple
+    historical_snapshots: dict
+    checkpoints: dict
+    next_checkpoint_id: int
+
+
+def replace_segment_result(result: SegmentEngineResult, segment) -> SegmentEngineResult:
+    """Bind an independently materialized Segment to an evaluation envelope."""
+    return SegmentEngineResult(
+        reason_code=result.reason_code,
+        candidate_direction=result.candidate_direction,
+        feature_elements=copy.deepcopy(result.feature_elements),
+        primary_evidence=copy.deepcopy(result.primary_evidence),
+        pending_second_case=copy.deepcopy(result.pending_second_case),
+        segment=copy.deepcopy(segment),
+        completed=result.completed,
+    )
+
+
 class IncrementalEngine:
-    def __init__(self, profile: dict, *, segment_reference_enabled: bool = False):
+    def __init__(
+        self,
+        profile: dict,
+        *,
+        segment_reference_enabled: bool = False,
+        segment_production_enabled: bool = False,
+    ):
         self.profile = profile
         if type(segment_reference_enabled) is not bool:
             raise TypeError("segment_reference_enabled must be a bool")
         self.segment_reference_enabled = segment_reference_enabled
+        if type(segment_production_enabled) is not bool:
+            raise TypeError("segment_production_enabled must be a bool")
+        if segment_reference_enabled and segment_production_enabled:
+            raise ValueError("SEGMENT_PRODUCTION_REFERENCE_MODE_CONFLICT")
+        self.segment_production_enabled = segment_production_enabled
         self.inclusion_engine = InclusionEngine(profile.get("inclusion", {}))
         self.fractal_engine = FractalEngine(profile.get("fractal", {}))
         self.stroke_engine = StrokeEngine(profile.get("stroke", {}))
@@ -84,6 +139,11 @@ class IncrementalEngine:
         self._max_engine_inputs = self._empty_engine_metrics()
         self._segment_reference_result: SegmentEngineResult | None = None
         self._segment_reference_source_strokes = ()
+        self._segments = []
+        self._segment_source_strokes = ()
+        self._segment_lifecycle_emitter = SegmentLifecycleEmitter(
+            SegmentLifecycleEmitter.reference_profile()
+        )
 
     def append_one(self, raw_bar: RawBar) -> dict[str, Any]:
         return self.append_batch([raw_bar])
@@ -92,11 +152,11 @@ class IncrementalEngine:
         if not new_bars:
             return self.get_current_state()
         self._validate_append(new_bars)
-        rollback_state = (
-            self._capture_reference_append_rollback_state()
-            if self.segment_reference_enabled
-            else None
-        )
+        rollback_state = None
+        if self.segment_production_enabled:
+            rollback_state = self._capture_production_append_rollback_state()
+        elif self.segment_reference_enabled:
+            rollback_state = self._capture_reference_append_rollback_state()
         combined = self._raw_bars + list(new_bars)
 
         if not self._raw_bars or not self._merged_bars:
@@ -104,7 +164,10 @@ class IncrementalEngine:
         else:
             self._bounded_reconcile(combined, len(new_bars))
 
-        if self.segment_reference_enabled:
+        try:
+          if self.segment_production_enabled:
+            self._evaluate_segment_production()
+          elif self.segment_reference_enabled:
             try:
                 self._evaluate_segment_reference()
             except Exception:
@@ -114,10 +177,153 @@ class IncrementalEngine:
                     self._segment_reference_result = None
                     self._segment_reference_source_strokes = ()
                 raise
-        self._store_historical_snapshot(len(self._raw_bars), self._snapshot_payload())
-        if self.checkpoint_interval and len(self._raw_bars) % self.checkpoint_interval == 0:
-            self.create_checkpoint()
-        return self.get_current_state()
+          self._store_historical_snapshot(len(self._raw_bars), self._snapshot_payload())
+          if self.checkpoint_interval and len(self._raw_bars) % self.checkpoint_interval == 0:
+              self.create_checkpoint()
+          return self.get_current_state()
+        except Exception:
+          if self.segment_production_enabled:
+              self._restore_production_append_rollback_state(rollback_state)
+          raise
+
+    def _capture_production_append_rollback_state(self):
+        base = self._capture_reference_append_rollback_state()
+        return _IncrementalProductionRollbackState(
+            **base.__dict__,
+            segments=copy.deepcopy(self._segments),
+            segment_source_strokes=copy.deepcopy(self._segment_source_strokes),
+            historical_snapshots=copy.deepcopy(self._historical_snapshots),
+            checkpoints=copy.deepcopy(self._checkpoints),
+            next_checkpoint_id=self._next_checkpoint_id,
+        )
+
+    def _restore_production_append_rollback_state(self, state):
+        self._restore_reference_append_rollback_state(state)
+        self._segments = copy.deepcopy(state.segments)
+        self._segment_source_strokes = copy.deepcopy(state.segment_source_strokes)
+        self._historical_snapshots = copy.deepcopy(state.historical_snapshots)
+        self._checkpoints = copy.deepcopy(state.checkpoints)
+        self._next_checkpoint_id = state.next_checkpoint_id
+
+    def _evaluate_segment_production(self) -> None:
+        source = tuple(
+            copy.deepcopy(stroke)
+            for stroke in self._strokes
+            if stroke.status == StructureStatus.CONFIRMED
+        )
+        if not source:
+            self._segments = []
+            self._segment_source_strokes = ()
+            return
+        current = SegmentEngine(
+            SegmentEngine.reference_profile()
+        ).process_primary(source, sequence_id="incremental:primary")
+        current = copy.deepcopy(current)
+        previous = self._segments[0] if self._segments else None
+        if current.reason_code == "SEGMENT_SECOND_CASE_PENDING":
+            raise ValueError("SEGMENT_SECOND_CASE_PENDING")
+        if current.segment is None:
+            if previous is None:
+                self._segments = []
+                self._segment_source_strokes = ()
+                return
+            policy = evaluate_incremental_segment_transient_policy(
+                previous=previous,
+                current=current,
+                previous_source_strokes=self._segment_source_strokes,
+                current_source_strokes=source,
+            )
+            if policy.action is not SegmentIncrementalTransientPolicyAction.RETAIN_PREVIOUS:
+                raise ValueError(policy.reason_code)
+            return
+        decision = reconcile_incremental_segment(
+            previous=previous,
+            current=current,
+            source_strokes=source,
+        )
+        if decision.action is SegmentIncrementalReconciliationAction.NO_PREVIOUS:
+            if decision.reason_code != "SEGMENT_RECONCILIATION_NO_PREVIOUS_FIRST_CASE":
+                raise ValueError(decision.reason_code)
+            materialized = copy.deepcopy(current.segment)
+            self._segment_lifecycle_emitter.emit(
+                result=replace_segment_result(current, materialized),
+                source_strokes=source,
+                event_log=self._event_log,
+            )
+            self._segments = [materialized]
+            self._segment_source_strokes = copy.deepcopy(source)
+            return
+        if decision.action is SegmentIncrementalReconciliationAction.REPLACE_REQUIRED:
+            replacement = materialize_incremental_segment_replacement(
+                previous=previous, current=current, source_strokes=source
+            )
+            self._segment_lifecycle_emitter.emit(
+                result=replace_segment_result(current, replacement.replacement_segment),
+                source_strokes=source, event_log=self._event_log,
+            )
+            intent = replacement.previous_replacement_intent
+            self._event_log.record(LifecycleEvent(
+                event_type=intent.event_type, object_type=intent.object_type,
+                object_id=intent.object_id, logical_id=intent.logical_id,
+                occurred_at_bar_id=intent.occurred_at_bar_id,
+                reason_code=intent.reason_code, replaced_by=intent.replaced_by,
+                rule_profile=intent.rule_profile, rule_version=intent.rule_version,
+            ))
+            self._segments = [replacement.replacement_segment]
+            self._segment_source_strokes = copy.deepcopy(source)
+            return
+        materialized = materialize_incremental_segment(
+            previous=previous, current=current, source_strokes=source,
+            allow_revisions=True,
+        )
+        if materialized.action is SegmentIncrementalReconciliationAction.REVISE:
+            self._segment_lifecycle_emitter.emit(
+                result=replace_segment_result(current, materialized.materialized_segment),
+                source_strokes=source, event_log=self._event_log,
+            )
+            self._event_log.record(LifecycleEvent(
+                event_type=EventType.STRUCTURE_REPLACED,
+                object_type="segment", object_id=previous.object_id,
+                logical_id=previous.logical_id,
+                occurred_at_bar_id=f"bar_{materialized.materialized_segment.confirmed_at_bar + 1:06d}",
+                reason_code="SEGMENT_RECONCILIATION_CONTENT_CHANGED",
+                replaced_by=materialized.materialized_segment.object_id,
+                detail={"old_revision": previous.revision, "new_revision": materialized.materialized_segment.revision},
+            ))
+        else:
+            self._segment_lifecycle_emitter.emit(
+                result=replace_segment_result(current, materialized.materialized_segment),
+                source_strokes=source, event_log=self._event_log,
+            )
+        self._segments = [materialized.materialized_segment]
+        self._segment_source_strokes = copy.deepcopy(source)
+
+    def _preflight_production_checkpoint(self, cp: Checkpoint) -> None:
+        if cp.segment_checkpoint_state is None:
+            if cp.segments or cp.segment_source_strokes:
+                raise ValueError("SEGMENT_CHECKPOINT_STATE_MISSING")
+            return
+        if not cp.segments or not cp.segment_source_strokes:
+            raise ValueError("SEGMENT_CHECKPOINT_STATE_MISSING")
+        segment = cp.segments[0]
+        events = [
+            event.__dict__ for event in cp.event_snapshot[0]
+            if event.object_type == "segment"
+            and event.object_id == segment.object_id
+            and event.event_type in {EventType.CREATED, EventType.CONFIRMED}
+        ]
+        try:
+            validate_segment_checkpoint_state(
+                cp.segment_checkpoint_state,
+                outcome_code="SEGMENT_FIRST_CASE_CONFIRMED",
+                candidate_direction=segment.direction,
+                source_strokes=cp.segment_source_strokes,
+                segment=segment,
+                lifecycle_events=events,
+                allow_revisions=True,
+            )
+        except SegmentCheckpointContractError as error:
+            raise ValueError(str(error)) from error
 
     def _capture_reference_append_rollback_state(
         self,
@@ -322,6 +528,23 @@ class IncrementalEngine:
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
         checkpoint_id = self._next_checkpoint_id
         self._next_checkpoint_id += 1
+        segment_state = None
+        if self.segment_production_enabled and self._segments:
+            segment = self._segments[0]
+            segment_events = [
+                event for event in self._event_log.to_list()
+                if event["object_type"] == "segment"
+                and event["object_id"] == segment.object_id
+                and event["event_type"] in {EventType.CREATED, EventType.CONFIRMED}
+            ]
+            segment_state = derive_segment_checkpoint_state(
+                outcome_code="SEGMENT_FIRST_CASE_CONFIRMED",
+                candidate_direction=segment.direction,
+                source_strokes=self._segment_source_strokes,
+                segment=segment,
+                lifecycle_events=segment_events,
+                allow_revisions=True,
+            )
         cp = Checkpoint(
             copy.deepcopy(self._raw_bars),
             copy.deepcopy(self._merged_bars),
@@ -335,6 +558,10 @@ class IncrementalEngine:
             copy.deepcopy(self._last_engine_inputs),
             copy.deepcopy(self._max_engine_inputs),
             digest,
+            segments=copy.deepcopy(self._segments) if self.segment_production_enabled else [],
+            segment_source_strokes=copy.deepcopy(self._segment_source_strokes)
+            if self.segment_production_enabled else (),
+            segment_checkpoint_state=copy.deepcopy(segment_state),
         )
         self._checkpoints[checkpoint_id] = cp
         while len(self._checkpoints) > self.checkpoint_retention:
@@ -357,10 +584,39 @@ class IncrementalEngine:
                 f"retained={sorted(self._checkpoints)}"
             )
         cp = self._checkpoints[checkpoint_id]
+        if self.segment_production_enabled:
+            self._preflight_production_checkpoint(cp)
         self._raw_bars = copy.deepcopy(cp.raw_bars)
         self._merged_bars = copy.deepcopy(cp.merged_bars)
         self._fractals = copy.deepcopy(cp.fractals)
         self._strokes = copy.deepcopy(cp.strokes)
+        if self.segment_production_enabled:
+            if cp.segment_checkpoint_state is not None:
+                if not cp.segments or not cp.segment_source_strokes:
+                    raise ValueError("SEGMENT_CHECKPOINT_STATE_MISSING")
+                segment = cp.segments[0]
+                source = cp.segment_source_strokes
+                events = [event.__dict__ for event in cp.event_snapshot[0]
+                          if event.object_type == "segment"
+                          and event.object_id == segment.object_id
+                          and event.event_type in {EventType.CREATED, EventType.CONFIRMED}]
+                try:
+                    validate_segment_checkpoint_state(
+                        cp.segment_checkpoint_state,
+                        outcome_code="SEGMENT_FIRST_CASE_CONFIRMED",
+                        candidate_direction=segment.direction,
+                        source_strokes=source,
+                        segment=segment,
+                        lifecycle_events=events,
+                        allow_revisions=True,
+                    )
+                except SegmentCheckpointContractError as error:
+                    raise ValueError(str(error)) from error
+                self._segments = copy.deepcopy(cp.segments)
+                self._segment_source_strokes = copy.deepcopy(source)
+            else:
+                self._segments = []
+                self._segment_source_strokes = ()
         self._event_log.restore(cp.event_snapshot)
         self._historical_snapshots = {
             count: snapshot
@@ -524,6 +780,8 @@ class IncrementalEngine:
             "fractals": [x.to_dict() for x in self._fractals],
             "strokes": [x.to_dict() for x in self._strokes],
         }
+        if self.segment_production_enabled:
+            structures["segments"] = [x.to_dict() for x in self._segments]
         digest = hashlib.sha256(
             json.dumps(structures, sort_keys=True, default=str).encode()
         ).hexdigest()[:16]

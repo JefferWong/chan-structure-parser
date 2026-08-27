@@ -181,6 +181,7 @@ def derive_segment_checkpoint_state(
     source_strokes: Sequence[Stroke],
     segment: Segment | None,
     lifecycle_events: Sequence[Mapping[str, Any]],
+    allow_revisions: bool = False,
 ) -> SegmentCheckpointState:
     """Derive an immutable envelope without mutating or re-running producers."""
 
@@ -222,6 +223,7 @@ def derive_segment_checkpoint_state(
             segment,
             candidate_direction=candidate_direction,
             source=source,
+            allow_revisions=allow_revisions,
         )
         intent_keys, binding_key, event_hashes = _validate_complete_lifecycle(
             events,
@@ -253,6 +255,7 @@ def validate_segment_checkpoint_state(
     source_strokes: Sequence[Stroke],
     segment: Segment | None,
     lifecycle_events: Sequence[Mapping[str, Any]],
+    allow_revisions: bool = False,
 ) -> None:
     """Require exact equality with a freshly derived canonical envelope."""
 
@@ -266,6 +269,7 @@ def validate_segment_checkpoint_state(
         source_strokes=source_strokes,
         segment=segment,
         lifecycle_events=lifecycle_events,
+        allow_revisions=allow_revisions,
     )
     if state != canonical:
         raise SegmentCheckpointContractError(
@@ -424,6 +428,7 @@ def _validate_first_case_segment(
     *,
     candidate_direction: StrokeDirection,
     source: tuple[Stroke, ...],
+    allow_revisions: bool = False,
 ) -> Segment:
     if type(segment) is not Segment:
         raise SegmentCheckpointContractError(
@@ -481,9 +486,12 @@ def _validate_first_case_segment(
     )
     expected_values = {
         "segment_id": expected_segment_id,
-        "object_id": f"{expected_segment_id}_r1",
+        "object_id": (
+            f"{expected_segment_id}_r{segment.revision}"
+            if allow_revisions else f"{expected_segment_id}_r1"
+        ),
         "logical_id": f"segment:{first.logical_id}->{boundary.logical_id}",
-        "revision": 1,
+        "revision": segment.revision if allow_revisions else 1,
         "rule_profile": "minimal_segment_engine_core_v1",
         "rule_version": "0.1.0",
         "start_stroke_id": first.stroke_id,
@@ -502,7 +510,7 @@ def _validate_first_case_segment(
             raise SegmentCheckpointContractError(
                 f"SEGMENT_CHECKPOINT_SEGMENT_REBINDING_MISMATCH:{name}"
             )
-    if type(segment.revision) is not int:
+    if type(segment.revision) is not int or segment.revision < 1:
         raise SegmentCheckpointContractError(
             "SEGMENT_CHECKPOINT_SEGMENT_REVISION_INVALID"
         )

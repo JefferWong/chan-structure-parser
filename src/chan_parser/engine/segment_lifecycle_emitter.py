@@ -241,14 +241,25 @@ class SegmentLifecycleEmitter:
             f"segment_{first.start_bar_index + 1:06d}_"
             f"{endpoint.bar_index + 1:06d}_{direction_code}"
         )
+        if type(segment.revision) is not int or segment.revision < 1:
+            raise SegmentLifecycleEmissionError(
+                "SEGMENT_IDENTITY_MISMATCH:revision"
+            )
+        if segment.revision != 1 and segment.object_id.endswith("_r1"):
+            raise SegmentLifecycleEmissionError(
+                "SEGMENT_IDENTITY_MISMATCH:revision"
+            )
         identity_comparisons = {
             "segment_id": (segment.segment_id, expected_segment_id),
-            "object_id": (segment.object_id, f"{expected_segment_id}_r1"),
-            "revision": (segment.revision, 1),
+            "object_id": (
+                segment.object_id,
+                f"{expected_segment_id}_r{segment.revision}",
+            ),
+            "revision": (segment.revision, segment.revision),
         }
         for name, (actual, expected) in identity_comparisons.items():
             if actual != expected or (
-                name == "revision" and type(actual) is not int
+                name == "revision" and (type(actual) is not int or actual < 1)
             ):
                 raise SegmentLifecycleEmissionError(
                     f"SEGMENT_IDENTITY_MISMATCH:{name}"
