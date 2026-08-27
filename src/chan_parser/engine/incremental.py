@@ -380,7 +380,12 @@ class IncrementalEngine:
         self._segment_reference_result = None
         self._segment_reference_source_strokes = ()
         if self.segment_reference_enabled:
-            self._evaluate_segment_reference()
+            try:
+                self._evaluate_segment_reference()
+            except Exception:
+                self._segment_reference_result = None
+                self._segment_reference_source_strokes = ()
+                raise
         self._event_log.record(LifecycleEvent(
             event_type=EventType.CHECKPOINT_RESTORED,
             object_type="engine",
@@ -460,13 +465,13 @@ class IncrementalEngine:
             for stroke in self._strokes
             if stroke.status == StructureStatus.CONFIRMED
         )
-        self._segment_reference_source_strokes = source
         if not source:
-            self._segment_reference_result = None
             return
-        self._segment_reference_result = SegmentEngine(
+        result = SegmentEngine(
             SegmentEngine.reference_profile()
         ).process_primary(source, sequence_id="incremental:primary")
+        self._segment_reference_source_strokes = source
+        self._segment_reference_result = result
 
     def get_segment_reference_result(self) -> dict[str, Any] | None:
         """Return opt-in Segment reference evidence without making it output authority."""
