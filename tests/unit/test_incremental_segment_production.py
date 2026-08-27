@@ -421,3 +421,30 @@ def test_no_previous_rejects_non_r1_candidate():
     finally:
         SegmentEngine.process_primary = original
     assert engine._segments == []
+
+
+def test_continuous_and_checkpoint_restore_production_paths_are_equivalent():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    canonical = SegmentEngine(SegmentEngine.reference_profile()).process_primary(
+        source, sequence_id="incremental:primary"
+    )
+    continuous, _, original = _engine_sequence([source], [canonical, canonical, canonical])
+    try:
+        for index in range(3):
+            continuous.append_batch(bars(index))
+    finally:
+        SegmentEngine.process_primary = original
+    restored, _, original = _engine_sequence([source], [canonical, canonical, canonical])
+    try:
+        restored.append_batch(bars(0))
+        checkpoint = restored.create_checkpoint()
+        restored.resume_from_checkpoint(checkpoint)
+        restored.append_batch(bars(1))
+        restored.append_batch(bars(2))
+    finally:
+        SegmentEngine.process_primary = original
+    continuous_events = [e for e in continuous.get_current_state()["events"] if e["object_type"] == "segment"]
+    restored_events = [e for e in restored.get_current_state()["events"] if e["object_type"] == "segment"]
+    assert continuous.get_current_state()["structures"]["segments"] == restored.get_current_state()["structures"]["segments"]
+    assert continuous._segment_source_strokes == restored._segment_source_strokes
+    assert continuous_events == restored_events
