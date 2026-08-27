@@ -71,6 +71,7 @@ def test_contract_has_only_existing_record_authority_dependencies():
         "..domain.segment",
         "..domain.stroke",
         "..engine.segment",
+        ".segment_incremental_source_continuity",
     }
     text = CONTRACT.read_text(encoding="utf-8")
     for forbidden in (
