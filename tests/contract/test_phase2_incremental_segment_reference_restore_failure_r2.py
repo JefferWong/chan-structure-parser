@@ -4,13 +4,16 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from chan_parser.audit.event_log import EventLog
+from chan_parser.domain.lifecycle import StructureStatus
 from chan_parser.domain.raw_bar import RawBar
 from chan_parser.engine.incremental import IncrementalEngine
+from chan_parser.engine.segment import SegmentEngine
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -334,19 +337,34 @@ def test_post_reference_failures_do_not_enter_r2_handler(monkeypatch, downstream
     assert original_restore is not None
 
 
-def test_baseexception_partial_reference_cache_is_cleared_and_reraised():
+def test_baseexception_is_not_caught():
     engine, checkpoint_id, _, _ = restore_fixture()
     marker = KeyboardInterrupt("base-exception")
-
-    def partially_fail() -> None:
-        engine._segment_reference_result = object()
-        engine._segment_reference_source_strokes = ("failed-source",)
-        raise marker
-
-    engine._evaluate_segment_reference = partially_fail
+    engine._evaluate_segment_reference = lambda: (
+        _ for _ in ()
+    ).throw(marker)
 
     with pytest.raises(KeyboardInterrupt) as exc:
         engine.resume_from_checkpoint(checkpoint_id)
+
+    assert exc.value is marker
+
+
+def test_reference_cache_is_published_only_after_evaluation_succeeds(monkeypatch):
+    engine = prepared_engine()
+    engine._strokes = [SimpleNamespace(status=StructureStatus.CONFIRMED)]
+    result_marker = object()
+    engine._segment_reference_result = result_marker
+    engine._segment_reference_source_strokes = (result_marker,)
+    marker = KeyboardInterrupt("reference-evaluation-failure")
+
+    def fail_process_primary(self, source, *, sequence_id):
+        raise marker
+
+    monkeypatch.setattr(SegmentEngine, "process_primary", fail_process_primary)
+
+    with pytest.raises(KeyboardInterrupt) as exc:
+        engine._evaluate_segment_reference()
 
     assert exc.value is marker
     assert_reference_cleared(engine)
