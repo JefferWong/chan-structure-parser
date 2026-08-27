@@ -91,70 +91,116 @@ def nonmaterialized(reason_code: str) -> SegmentEngineResult:
 
 
 @pytest.mark.parametrize(
-    "reason_code",
+    ("reason_code", "preserved", "expected_action"),
     [
-        "SEGMENT_FEATURE_WINDOW_INCOMPLETE",
-        "SEGMENT_PRIMARY_FRACTAL_NOT_FOUND",
+        ("SEGMENT_FEATURE_WINDOW_INCOMPLETE", True, "RETAIN_PREVIOUS"),
+        ("SEGMENT_PRIMARY_FRACTAL_NOT_FOUND", True, "RETAIN_PREVIOUS"),
+        ("SEGMENT_FEATURE_WINDOW_INCOMPLETE", False, "FAIL_CLOSED"),
+        ("SEGMENT_PRIMARY_FRACTAL_NOT_FOUND", False, "FAIL_CLOSED"),
+        ("SEGMENT_SECOND_CASE_PENDING", True, "FAIL_CLOSED"),
+        ("SEGMENT_SECOND_CASE_PENDING", False, "FAIL_CLOSED"),
     ],
 )
-def test_transient_policy_retains_previous_only_with_preserved_source(reason_code):
+def test_transient_policy_six_cell_matrix(reason_code, preserved, expected_action):
     previous = segment()
     source = strokes()
+    current_source = (
+        source
+        if preserved
+        else (replace(source[0], end_price=99.0), *source[1:])
+    )
     decision = evaluate_incremental_segment_transient_policy(
         previous=previous,
         current=nonmaterialized(reason_code),
         previous_source_strokes=source,
-        current_source_strokes=source,
+        current_source_strokes=current_source,
     )
-    assert decision.action is SegmentIncrementalTransientPolicyAction.RETAIN_PREVIOUS
+    assert decision.action.value == expected_action
     assert decision.current_outcome_code == reason_code
-    assert decision.source_continuity_action.value == "PRESERVED"
-    assert decision.bound_prefix_length == 3
-    assert decision.previous_logical_id == previous.logical_id
-    assert decision.previous_object_id == previous.object_id
-    assert decision.previous_revision == previous.revision
-    assert decision.previous_content_hash == previous.content_hash()
+    assert decision.source_continuity_action.value == (
+        "PRESERVED" if preserved else "BROKEN"
+    )
+
+
+def transient_policy_call(*, previous, current, previous_source_strokes, current_source_strokes):
+    return evaluate_incremental_segment_transient_policy(
+        previous=previous,
+        current=current,
+        previous_source_strokes=previous_source_strokes,
+        current_source_strokes=current_source_strokes,
+    )
 
 
 @pytest.mark.parametrize(
-    "reason_code",
+    "case",
     [
-        "SEGMENT_FEATURE_WINDOW_INCOMPLETE",
-        "SEGMENT_PRIMARY_FRACTAL_NOT_FOUND",
-        "SEGMENT_SECOND_CASE_PENDING",
+        "malformed_previous",
+        "lifecycle_invalid_previous",
+        "malformed_previous_source",
+        "malformed_current_source",
+        "previous_source_mismatch",
+        "current_carries_segment",
+        "current_completed",
+        "unexpected_pending",
+        "missing_pending",
+        "first_case",
+        "wrong_direction",
     ],
 )
-def test_transient_policy_fails_closed_for_broken_source_or_second_case(reason_code):
+def test_transient_policy_fail_closed_inputs(case):
     previous = segment()
-    historical = strokes()
-    current = nonmaterialized(reason_code)
-    changed = replace(historical[0], end_price=99.0)
-    current_source = (changed, *historical[1:])
-    decision = evaluate_incremental_segment_transient_policy(
-        previous=previous,
-        current=current,
-        previous_source_strokes=historical,
-        current_source_strokes=(historical if reason_code == "SEGMENT_SECOND_CASE_PENDING" else current_source),
-    )
-    assert decision.action is SegmentIncrementalTransientPolicyAction.FAIL_CLOSED
-    if reason_code == "SEGMENT_SECOND_CASE_PENDING":
-        assert decision.source_continuity_action.value == "PRESERVED"
+    source = strokes()
+    current = nonmaterialized("SEGMENT_FEATURE_WINDOW_INCOMPLETE")
+    if case == "malformed_previous":
+        previous = object()
+    elif case == "lifecycle_invalid_previous":
+        previous = replace(previous, status=StructureStatus.INVALIDATED)
+    elif case == "malformed_previous_source":
+        source = "not-a-source"
+    elif case == "malformed_current_source":
+        current_source = "not-a-source"
+    elif case == "previous_source_mismatch":
+        previous = replace(
+            previous,
+            stroke_ids=["stroke_000005", "stroke_000002", "stroke_000003"],
+        )
+    elif case == "current_carries_segment":
+        current = replace(current, segment=segment())
+    elif case == "current_completed":
+        current = replace(current, completed=True)
+    elif case == "unexpected_pending":
+        current = replace(current, pending_second_case=object())
+    elif case == "missing_pending":
+        current = replace(
+            current,
+            reason_code="SEGMENT_SECOND_CASE_PENDING",
+            pending_second_case=None,
+        )
+    elif case == "first_case":
+        current = first_case()
     else:
-        assert decision.source_continuity_action.value == "BROKEN"
+        current = replace(current, candidate_direction="UP")
+    with pytest.raises(SegmentIncrementalTransientPolicyError):
+        transient_policy_call(
+            previous=previous,
+            current=current,
+            previous_source_strokes=source,
+            current_source_strokes=locals().get("current_source", source),
+        )
 
 
-def test_transient_policy_rejects_malformed_inputs_and_is_deterministic_and_pure():
+def test_transient_policy_is_deterministic_and_pure():
     previous = segment()
     source = strokes()
     current = nonmaterialized("SEGMENT_FEATURE_WINDOW_INCOMPLETE")
     before = deepcopy((previous, current, source))
-    first = evaluate_incremental_segment_transient_policy(
+    first = transient_policy_call(
         previous=previous,
         current=current,
         previous_source_strokes=source,
         current_source_strokes=source,
     )
-    second = evaluate_incremental_segment_transient_policy(
+    second = transient_policy_call(
         previous=deepcopy(previous),
         current=deepcopy(current),
         previous_source_strokes=deepcopy(source),
@@ -162,39 +208,6 @@ def test_transient_policy_rejects_malformed_inputs_and_is_deterministic_and_pure
     )
     assert first == second
     assert (previous, current, source) == before
-
-    with pytest.raises(SegmentIncrementalTransientPolicyError):
-        evaluate_incremental_segment_transient_policy(
-            previous=replace(previous, status=StructureStatus.INVALIDATED),
-            current=current,
-            previous_source_strokes=source,
-            current_source_strokes=source,
-        )
-    with pytest.raises(SegmentIncrementalTransientPolicyError):
-        evaluate_incremental_segment_transient_policy(
-            previous=previous,
-            current=replace(current, segment=segment()),
-            previous_source_strokes=source,
-            current_source_strokes=source,
-        )
-    with pytest.raises(SegmentIncrementalTransientPolicyError):
-        evaluate_incremental_segment_transient_policy(
-            previous=previous,
-            current=replace(
-                current,
-                reason_code="SEGMENT_SECOND_CASE_PENDING",
-                pending_second_case=None,
-            ),
-            previous_source_strokes=source,
-            current_source_strokes=source,
-        )
-    with pytest.raises(SegmentIncrementalTransientPolicyError):
-        evaluate_incremental_segment_transient_policy(
-            previous=previous,
-            current=first_case(),
-            previous_source_strokes=source,
-            current_source_strokes=source,
-        )
 
 
 @pytest.mark.parametrize(

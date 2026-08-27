@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/chan_parser"
 CONTRACT = SOURCE / "contracts/segment_incremental_source_continuity.py"
 TRANSIENT_POLICY_CONTRACT = SOURCE / "contracts/segment_incremental_reconciliation.py"
+TRANSIENT_POLICY_CONTRACT_SHA256 = "5ee44c9432f684ee3b5cfdeeffd0c973801f670ce9e31566cfa3b2d6f46a58cc"
 
 
 def _tree(path: Path) -> ast.Module:
@@ -111,3 +112,12 @@ def test_transient_policy_contract_is_the_only_authorized_policy_boundary():
     assert "evaluate_incremental_segment_source_continuity" in text
     assert "engine.incremental" not in text
     assert "segment_checkpoint" not in text
+
+
+def test_transient_policy_contract_is_byte_exact_frozen():
+    import hashlib
+
+    assert (
+        hashlib.sha256(TRANSIENT_POLICY_CONTRACT.read_bytes()).hexdigest()
+        == TRANSIENT_POLICY_CONTRACT_SHA256
+    )
