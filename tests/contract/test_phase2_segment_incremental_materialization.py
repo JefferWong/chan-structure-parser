@@ -315,3 +315,20 @@ def test_materializer_rejects_unsupported_or_unauthenticated_inputs(case):
             current=current,
             source_strokes=source,
         )
+
+
+@pytest.mark.parametrize("scenario", ["no_previous", "replace_required"])
+def test_unsupported_action_has_stable_reason_code(scenario):
+    previous = candidate_segment()
+    candidate = candidate_segment()
+    if scenario == "no_previous":
+        previous = None
+    else:
+        candidate = replace(candidate, logical_id="segment:logical:other")
+    with pytest.raises(SegmentIncrementalMaterializationError) as raised:
+        materialize_incremental_segment(
+            previous=previous,
+            current=first_case(candidate),
+            source_strokes=source_strokes(),
+        )
+    assert raised.value.reason_code == "SEGMENT_MATERIALIZATION_ACTION_UNSUPPORTED"

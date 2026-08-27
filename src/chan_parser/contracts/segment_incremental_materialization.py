@@ -165,8 +165,7 @@ def materialize_incremental_segment(
         SegmentIncrementalReconciliationAction.REVISE,
     }:
         raise SegmentIncrementalMaterializationError(
-            "SEGMENT_MATERIALIZATION_ACTION_UNSUPPORTED:"
-            f"{decision.action.value}"
+            "SEGMENT_MATERIALIZATION_ACTION_UNSUPPORTED"
         )
     if type(previous) is not Segment or type(current) is not SegmentEngineResult:
         raise SegmentIncrementalMaterializationError(
