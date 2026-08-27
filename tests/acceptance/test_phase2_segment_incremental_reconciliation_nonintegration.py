@@ -108,10 +108,12 @@ def test_contract_does_not_construct_segments_or_duplicate_identity_algorithms()
 
 def test_runtime_checkpoint_and_parser_sources_do_not_import_contract():
     for path in SOURCE.rglob("*.py"):
-        if path in {CONTRACT, MATERIALIZER, REPLACEMENT}:
+        if path in {CONTRACT, MATERIALIZER, REPLACEMENT, SOURCE / "engine/incremental.py"}:
             continue
         assert "segment_incremental_reconciliation" not in path.read_text(encoding="utf-8")
     for path in FROZEN_RUNTIME_FILES:
+        if path == SOURCE / "engine/incremental.py":
+            continue
         assert "segment_incremental_reconciliation" not in path.read_text(encoding="utf-8")
 
 

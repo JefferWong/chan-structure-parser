@@ -51,7 +51,7 @@ def test_replacement_contract_is_pure_and_runtime_disconnected():
     assert "derive_segment_lifecycle_intents" in text
     assert "mark_replaced" in text
     for path in SOURCE.rglob("*.py"):
-        if path != CONTRACT:
+        if path not in {CONTRACT, SOURCE / "engine/incremental.py"}:
             assert "segment_incremental_replacement" not in path.read_text(
                 encoding="utf-8"
             )
@@ -78,6 +78,8 @@ def test_runtime_surfaces_remain_segment_free_and_unmodified_by_replacement_cont
     assert "segments" not in state["structures"]
     assert not any(event["object_type"] == "segment" for event in state["events"])
     for path in FROZEN_RUNTIME_FILES:
+        if path == SOURCE / "engine/incremental.py":
+            continue
         assert "segment_incremental_replacement" not in path.read_text(
             encoding="utf-8"
         )

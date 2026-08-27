@@ -78,14 +78,33 @@ class SegmentLifecycleEmitter:
     )
 
     def __init__(self, profile: Mapping[str, Any]):
-        self._validate_exact_mapping(profile, self._EXPECTED_PROFILE, "profile")
-        self.profile_id = self.PROFILE_ID
-        self.profile_version = self.PROFILE_VERSION
+        if profile == self.production_profile():
+            self.profile_id = profile["profile_id"]
+            self.profile_version = profile["profile_version"]
+            self._revision_aware = True
+        else:
+            self._validate_exact_mapping(profile, self._EXPECTED_PROFILE, "profile")
+            self.profile_id = self.PROFILE_ID
+            self.profile_version = self.PROFILE_VERSION
+            self._revision_aware = False
 
     @classmethod
     def reference_profile(cls) -> dict[str, Any]:
         """Return an isolated copy of the authoritative emitter profile."""
         return deepcopy(cls._EXPECTED_PROFILE)
+
+    @classmethod
+    def production_profile(cls) -> dict[str, Any]:
+        profile = deepcopy(cls._EXPECTED_PROFILE)
+        profile["profile_id"] = "minimal_segment_lifecycle_production_v2"
+        profile["profile_version"] = "0.2.0"
+        profile["status"] = "INCREMENTAL_PRODUCTION"
+        profile["integration"] = {
+            **profile["integration"],
+            "checkpoint_integration_enabled": True,
+            "full_incremental_integration_enabled": True,
+        }
+        return profile
 
     def emit(
         self,
@@ -241,14 +260,25 @@ class SegmentLifecycleEmitter:
             f"segment_{first.start_bar_index + 1:06d}_"
             f"{endpoint.bar_index + 1:06d}_{direction_code}"
         )
+        if type(segment.revision) is not int or segment.revision < 1:
+            raise SegmentLifecycleEmissionError(
+                "SEGMENT_IDENTITY_MISMATCH:revision"
+            )
+        if not self._revision_aware and segment.revision != 1:
+            raise SegmentLifecycleEmissionError(
+                "SEGMENT_IDENTITY_MISMATCH:revision"
+            )
         identity_comparisons = {
             "segment_id": (segment.segment_id, expected_segment_id),
-            "object_id": (segment.object_id, f"{expected_segment_id}_r1"),
-            "revision": (segment.revision, 1),
+            "object_id": (
+                segment.object_id,
+                f"{expected_segment_id}_r{segment.revision}",
+            ),
+            "revision": (segment.revision, segment.revision),
         }
         for name, (actual, expected) in identity_comparisons.items():
             if actual != expected or (
-                name == "revision" and type(actual) is not int
+                name == "revision" and (type(actual) is not int or actual < 1)
             ):
                 raise SegmentLifecycleEmissionError(
                     f"SEGMENT_IDENTITY_MISMATCH:{name}"
@@ -472,10 +502,7 @@ class SegmentLifecycleEmitter:
                 if isinstance(detail, Mapping)
                 else None
             )
-            identity_match = (
-                event.get("logical_id") == logical_id
-                or event.get("object_id") == object_id
-            )
+            identity_match = event.get("object_id") == object_id
             canonical_intent_match = (
                 type(intent_key) is str and intent_key in canonical_by_key
             )

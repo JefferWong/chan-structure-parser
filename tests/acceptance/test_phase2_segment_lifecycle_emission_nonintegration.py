@@ -85,10 +85,11 @@ def test_emitter_makes_zero_canonical_oracle_calls():
 
 
 def test_no_engine_or_parser_path_imports_or_exports_emitter():
-    for path in (SEGMENT_ENGINE, INCREMENTAL, ENGINE_INIT):
+    for path in (SEGMENT_ENGINE, ENGINE_INIT):
         text = path.read_text(encoding="utf-8")
         assert "SegmentLifecycleEmitter" not in text
         assert "segment_lifecycle_emitter" not in text
+    assert "SegmentLifecycleEmitter" in INCREMENTAL.read_text(encoding="utf-8")
     full_text = FULL.read_text(encoding="utf-8")
     assert "SegmentLifecycleEmitter" in full_text
     assert "segment_lifecycle_emitter" in full_text
@@ -126,7 +127,7 @@ def test_parser_checkpoint_and_bounded_tail_remain_unintegrated():
     ):
         assert token not in emitter_text
     for path in SOURCE.rglob("*.py"):
-        if path == EMITTER:
+        if path in {EMITTER, INCREMENTAL}:
             continue
         if path == FULL:
             continue

@@ -22,6 +22,7 @@ ALLOWED_IMPORTS = {
     "math",
     "re",
     "typing",
+    "copy",
     "..domain.lifecycle",
     "..domain.segment",
     "..domain.stroke",
@@ -136,6 +137,7 @@ def test_public_contract_surface_and_all_are_exact():
         "validate_segment_checkpoint_profile",
         "derive_segment_checkpoint_state",
         "validate_segment_checkpoint_state",
+        "production_segment_checkpoint_profile",
     }
     all_assignments = [
         node
@@ -150,6 +152,7 @@ def test_public_contract_surface_and_all_are_exact():
         "validate_segment_checkpoint_profile",
         "derive_segment_checkpoint_state",
         "validate_segment_checkpoint_state",
+        "production_segment_checkpoint_profile",
     )
 
 
@@ -160,10 +163,10 @@ def test_checkpoint_contract_is_not_imported_by_any_other_production_module():
         if path != CONTRACT
         and "segment_checkpoint" in path.read_text(encoding="utf-8")
     }
-    assert importers == set()
+    assert importers == {SOURCE / "engine/incremental.py"}
 
 
-def test_incremental_runtime_does_not_integrate_segment_checkpoint_contract():
+def test_incremental_runtime_integrates_segment_checkpoint_contract_except_profile_validator():
     tree = _tree(SOURCE / "engine/incremental.py")
     imported_modules = {
         f'{"." * node.level}{node.module or ""}'
@@ -176,7 +179,7 @@ def test_incremental_runtime_does_not_integrate_segment_checkpoint_contract():
         if isinstance(node, ast.Import)
         for alias in node.names
     )
-    assert not any("segment_checkpoint" in module for module in imported_modules)
+    assert any("segment_checkpoint" in module for module in imported_modules)
 
     forbidden_names = {
         "SegmentCheckpointState",
@@ -188,7 +191,11 @@ def test_incremental_runtime_does_not_integrate_segment_checkpoint_contract():
         node.id
         for node in ast.walk(tree)
         if isinstance(node, ast.Name)
-    }.intersection(forbidden_names)
+    }.intersection(forbidden_names) - {
+        "SegmentCheckpointState",
+        "derive_segment_checkpoint_state",
+        "validate_segment_checkpoint_state",
+    }
 
 
 @pytest.mark.parametrize(
