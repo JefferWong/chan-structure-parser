@@ -81,10 +81,12 @@ class SegmentLifecycleEmitter:
         if profile == self.production_profile():
             self.profile_id = profile["profile_id"]
             self.profile_version = profile["profile_version"]
+            self._revision_aware = True
         else:
             self._validate_exact_mapping(profile, self._EXPECTED_PROFILE, "profile")
             self.profile_id = self.PROFILE_ID
             self.profile_version = self.PROFILE_VERSION
+            self._revision_aware = False
 
     @classmethod
     def reference_profile(cls) -> dict[str, Any]:
@@ -262,7 +264,7 @@ class SegmentLifecycleEmitter:
             raise SegmentLifecycleEmissionError(
                 "SEGMENT_IDENTITY_MISMATCH:revision"
             )
-        if segment.revision != 1 and segment.object_id.endswith("_r1"):
+        if not self._revision_aware and segment.revision != 1:
             raise SegmentLifecycleEmissionError(
                 "SEGMENT_IDENTITY_MISMATCH:revision"
             )

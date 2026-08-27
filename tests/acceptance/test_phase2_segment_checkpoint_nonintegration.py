@@ -166,7 +166,7 @@ def test_checkpoint_contract_is_not_imported_by_any_other_production_module():
     assert importers == {SOURCE / "engine/incremental.py"}
 
 
-def test_incremental_runtime_does_not_integrate_segment_checkpoint_contract():
+def test_incremental_runtime_integrates_segment_checkpoint_contract_except_profile_validator():
     tree = _tree(SOURCE / "engine/incremental.py")
     imported_modules = {
         f'{"." * node.level}{node.module or ""}'

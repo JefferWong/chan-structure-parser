@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import replace
 from copy import deepcopy
+from itertools import pairwise
 
 import pytest
 import yaml
@@ -41,7 +42,7 @@ def strokes(points):
         start_price=a, end_price=b, start_bar_index=i, end_bar_index=i + 1,
         merged_bar_count=2, max_price=max(a, b), min_price=min(a, b),
         price_range=abs(b - a), confirmation_requirements=[], repaint_risk="NONE",
-    ) for i, (a, b) in enumerate(zip(points, points[1:]))]
+    ) for i, (a, b) in enumerate(pairwise(points))]
 
 
 def prepared(source, *, production=False, reference=False):
@@ -138,6 +139,22 @@ def test_rn_lifecycle_history_is_scoped_to_exact_object_revision():
     assert [e["object_id"] for e in log.to_list() if e["object_type"] == "segment"] == [
         current.segment.object_id, current.segment.object_id, r2.object_id, r2.object_id
     ]
+
+
+def test_reference_emitter_rejects_r2_while_production_accepts_it():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    current = SegmentEngine(SegmentEngine.reference_profile()).process_primary(
+        source, sequence_id="incremental:primary"
+    )
+    r2 = replace(current.segment, revision=2,
+                 object_id=f"{current.segment.segment_id}_r2")
+    with pytest.raises(ValueError, match="SEGMENT_IDENTITY_MISMATCH:revision"):
+        SegmentLifecycleEmitter(SegmentLifecycleEmitter.reference_profile()).emit(
+            result=replace(current, segment=r2), source_strokes=source, event_log=EventLog()
+        )
+    SegmentLifecycleEmitter(SegmentLifecycleEmitter.production_profile()).emit(
+        result=replace(current, segment=r2), source_strokes=source, event_log=EventLog()
+    )
 
 
 def test_empty_current_source_with_previous_fails_closed_and_rolls_back():
@@ -241,6 +258,9 @@ def test_incremental_revise_then_reuse_uses_rn_materialization():
         ("OBJECT_CONFIRMED", segment["object_id"], None),
         ("STRUCTURE_REPLACED", first.segment.object_id, segment["object_id"]),
     ]
+    replacement = [e for e in revised["events"] if e["object_type"] == "segment"][-1]
+    assert replacement["rule_profile"] == first.segment.rule_profile
+    assert replacement["rule_version"] == first.segment.rule_version
     assert delta == []
 
 
@@ -336,13 +356,17 @@ def test_production_rn_checkpoint_uses_versioned_profile():
     source1 = strokes([0, 10, 4, 12, 6, 11, 5])
     source2 = deepcopy(source1)
     for stroke in source2:
-        stroke.start_price += 1; stroke.end_price += 1
-        stroke.max_price += 1; stroke.min_price += 1
+        stroke.start_price += 1
+        stroke.end_price += 1
+        stroke.max_price += 1
+        stroke.min_price += 1
     first = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source1, sequence_id="incremental:primary")
     second = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source2, sequence_id="incremental:primary")
     engine, current, original = _engine_sequence([source1, source2], [first, second])
     try:
-        engine.append_batch(bars(0)); current["source"] = source2; engine.append_batch(bars(1))
+        engine.append_batch(bars(0))
+        current["source"] = source2
+        engine.append_batch(bars(1))
     finally:
         SegmentEngine.process_primary = original
     checkpoint = engine.create_checkpoint()
@@ -357,13 +381,17 @@ def test_production_replacement_r1_checkpoint_restores_without_duplicate_events(
     source2 = deepcopy(source1)
     for i, stroke in enumerate(source2):
         stroke.logical_id = f"other:{i}"
-        stroke.start_bar_index += 10; stroke.end_bar_index += 10
-        stroke.created_at_bar += 10; stroke.confirmed_at_bar += 10
+        stroke.start_bar_index += 10
+        stroke.end_bar_index += 10
+        stroke.created_at_bar += 10
+        stroke.confirmed_at_bar += 10
     first = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source1, sequence_id="incremental:primary")
     second = SegmentEngine(SegmentEngine.reference_profile()).process_primary(source2, sequence_id="incremental:primary")
     engine, current, original = _engine_sequence([source1, source2], [first, second])
     try:
-        engine.append_batch(bars(0)); current["source"] = source2; engine.append_batch(bars(1))
+        engine.append_batch(bars(0))
+        current["source"] = source2
+        engine.append_batch(bars(1))
     finally:
         SegmentEngine.process_primary = original
     checkpoint = engine.create_checkpoint()
@@ -382,7 +410,10 @@ def test_checkpoint_source_and_semantic_tamper_fail_before_live_mutation():
     checkpoint = engine.create_checkpoint()
     before = engine.get_current_state()
     cp = engine._checkpoints[checkpoint]
-    cp.segment_source_strokes = (replace(cp.segment_source_strokes[0], start_price=999),) + cp.segment_source_strokes[1:]
+    cp.segment_source_strokes = (
+        replace(cp.segment_source_strokes[0], start_price=999),
+        *cp.segment_source_strokes[1:],
+    )
     with pytest.raises(ValueError):
         engine.resume_from_checkpoint(checkpoint)
     assert engine.get_current_state() == before
@@ -405,6 +436,27 @@ def test_checkpoint_semantic_state_requires_exactly_one_segment():
     cp.segments = []
     with pytest.raises(ValueError, match="SEGMENT_CHECKPOINT_STATE_MISSING"):
         engine.resume_from_checkpoint(checkpoint)
+
+
+def test_failed_checkpoint_derivation_does_not_consume_id_or_event():
+    engine = prepared(strokes([0, 10, 4, 12, 6, 11, 5]), production=True)
+    engine.checkpoint_interval = 0
+    engine.append_batch(bars(0))
+    before_id = engine._next_checkpoint_id
+    before_checkpoints = deepcopy(engine._checkpoints)
+    before_events = engine.get_current_state()["events"]
+    original = __import__("chan_parser.engine.incremental", fromlist=["derive_segment_checkpoint_state"]).derive_segment_checkpoint_state
+    engine_module = __import__("chan_parser.engine.incremental", fromlist=["derive_segment_checkpoint_state"])
+    engine_module.derive_segment_checkpoint_state = lambda **kwargs: (_ for _ in ()).throw(ValueError("checkpoint sentinel"))
+    try:
+        with pytest.raises(ValueError, match="checkpoint sentinel"):
+            engine.create_checkpoint()
+    finally:
+        engine_module.derive_segment_checkpoint_state = original
+    assert engine._next_checkpoint_id == before_id
+    assert engine._checkpoints == before_checkpoints
+    assert engine.get_current_state()["events"] == before_events
+    assert engine.create_checkpoint() == before_id
 
 
 def test_no_previous_rejects_non_r1_candidate():

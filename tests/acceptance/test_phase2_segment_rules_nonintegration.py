@@ -417,16 +417,3 @@ def test_lifecycle_oracle_gate_rejects_absolute_module_alias_attribute_call():
     violations = _lifecycle_oracle_import_violations(bypass)
     assert "SEGMENT_RULES_MODULE_OBJECT_IMPORT" in violations
     assert "SEGMENT_RULES_ORACLE_AUTHORITY_CALL" in violations
-
-
-def test_phase1_parser_sources_have_no_segment_output_or_rule_profile_hook():
-    for relative in (
-        "src/chan_parser/engine/incremental.py",
-    ):
-        text = (ROOT / relative).read_text(encoding="utf-8")
-        if relative.endswith("engine/incremental.py"):
-            continue
-        assert '"segments"' not in text
-        assert "'segments'" not in text
-        assert "minimal_segment_canonical_rules_v1" not in text
-        assert "minimal_segment_engine_core_v1" not in text

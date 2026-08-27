@@ -300,6 +300,8 @@ class IncrementalEngine:
                 occurred_at_bar_id=f"bar_{materialized.materialized_segment.confirmed_at_bar + 1:06d}",
                 reason_code="SEGMENT_RECONCILIATION_CONTENT_CHANGED",
                 replaced_by=materialized.materialized_segment.object_id,
+                rule_profile=previous.rule_profile,
+                rule_version=previous.rule_version,
                 detail={"old_revision": previous.revision, "new_revision": materialized.materialized_segment.revision},
             ))
         else:
@@ -541,7 +543,6 @@ class IncrementalEngine:
         payload = self._snapshot_payload()
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
         checkpoint_id = self._next_checkpoint_id
-        self._next_checkpoint_id += 1
         segment_state = None
         if self.segment_production_enabled and self._segments:
             if len(self._segments) != 1:
@@ -579,6 +580,7 @@ class IncrementalEngine:
             if self.segment_production_enabled else (),
             segment_checkpoint_state=copy.deepcopy(segment_state),
         )
+        self._next_checkpoint_id += 1
         self._checkpoints[checkpoint_id] = cp
         while len(self._checkpoints) > self.checkpoint_retention:
             oldest_id = min(self._checkpoints)
@@ -608,28 +610,8 @@ class IncrementalEngine:
         self._strokes = copy.deepcopy(cp.strokes)
         if self.segment_production_enabled:
             if cp.segment_checkpoint_state is not None:
-                if not cp.segments or not cp.segment_source_strokes:
-                    raise ValueError("SEGMENT_CHECKPOINT_STATE_MISSING")
-                segment = cp.segments[0]
-                source = cp.segment_source_strokes
-                events = [event.__dict__ for event in cp.event_snapshot[0]
-                          if event.object_type == "segment"
-                          and event.object_id == segment.object_id
-                          and event.event_type in {EventType.CREATED, EventType.CONFIRMED}]
-                try:
-                    validate_segment_checkpoint_state(
-                        cp.segment_checkpoint_state,
-                        outcome_code="SEGMENT_FIRST_CASE_CONFIRMED",
-                        candidate_direction=segment.direction,
-                        source_strokes=source,
-                        segment=segment,
-                        lifecycle_events=events,
-                        profile=self._segment_checkpoint_profile,
-                    )
-                except SegmentCheckpointContractError as error:
-                    raise ValueError(str(error)) from error
                 self._segments = copy.deepcopy(cp.segments)
-                self._segment_source_strokes = copy.deepcopy(source)
+                self._segment_source_strokes = copy.deepcopy(cp.segment_source_strokes)
             else:
                 self._segments = []
                 self._segment_source_strokes = ()
