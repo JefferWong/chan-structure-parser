@@ -264,6 +264,10 @@ def materialize_incremental_segment_replacement(
 ) -> SegmentIncrementalReplacementResult:
     """Materialize only an authenticated REPLACE_REQUIRED result."""
 
+    if type(previous) is not Segment or type(current) is not SegmentEngineResult:
+        raise SegmentIncrementalReplacementError(
+            "SEGMENT_REPLACEMENT_INPUT_TYPE_INVALID"
+        )
     try:
         decision = reconcile_incremental_segment(
             previous=previous,
@@ -275,10 +279,6 @@ def materialize_incremental_segment_replacement(
     if decision.action is not SegmentIncrementalReconciliationAction.REPLACE_REQUIRED:
         raise SegmentIncrementalReplacementError(
             "SEGMENT_REPLACEMENT_ACTION_UNSUPPORTED"
-        )
-    if type(previous) is not Segment or type(current) is not SegmentEngineResult:
-        raise SegmentIncrementalReplacementError(
-            "SEGMENT_REPLACEMENT_INPUT_TYPE_INVALID"
         )
     candidate = current.segment
     if type(candidate) is not Segment:
@@ -308,7 +308,9 @@ def materialize_incremental_segment_replacement(
             primary_evidence=current.primary_evidence,
         )
     except SegmentLifecycleContractError as error:
-        raise SegmentIncrementalReplacementError(str(error)) from error
+        raise SegmentIncrementalReplacementError(
+            "SEGMENT_REPLACEMENT_CANDIDATE_LIFECYCLE_INVALID"
+        ) from error
     if len(candidate_intents) != 2:
         raise SegmentIncrementalReplacementError(
             "SEGMENT_REPLACEMENT_CANDIDATE_LIFECYCLE_INVALID"

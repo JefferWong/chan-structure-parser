@@ -149,16 +149,79 @@ def test_replace_required_materializes_independent_records_and_ordered_intents()
 
 
 def test_replacement_copies_are_mutable_independently_after_materialization():
-    result = replacement_result()
     current, source = first_case()
     assert current.segment is not None
     previous = previous_for(current.segment)
+    result = materialize_incremental_segment_replacement(
+        previous=previous,
+        current=current,
+        source_strokes=source,
+    )
     result.replaced_previous.stroke_ids.append("old-only")
     result.replacement_segment.stroke_ids.append("new-only")
     assert "old-only" not in previous.stroke_ids
     assert "new-only" not in current.segment.stroke_ids
+    assert "new-only" not in result.replaced_previous.stroke_ids
+    assert "old-only" not in result.replacement_segment.stroke_ids
+
+    for field, old_value, new_value in (
+        ("feature_sequence_stroke_ids", "old-feature-only", "new-feature-only"),
+        ("destruction_evidence_stroke_ids", "old-destruction-only", "new-destruction-only"),
+        ("confirmation_requirements", "old-confirmation-only", "new-confirmation-only"),
+    ):
+        getattr(result.replaced_previous, field).append(old_value)
+        getattr(result.replacement_segment, field).append(new_value)
+        assert old_value not in getattr(previous, field)
+        assert new_value not in getattr(current.segment, field)
+        assert new_value not in getattr(result.replaced_previous, field)
+        assert old_value not in getattr(result.replacement_segment, field)
+
     assert result.replaced_previous is not result.replacement_segment
     assert source[0].stroke_id == "stroke_000001"
+
+
+def test_replacement_rejects_invalid_previous_type_before_reconciliation():
+    current, source = first_case()
+    assert current.segment is not None
+    with pytest.raises(SegmentIncrementalReplacementError) as raised:
+        materialize_incremental_segment_replacement(
+            previous=object(),
+            current=current,
+            source_strokes=source,
+        )
+    assert raised.value.reason_code == "SEGMENT_REPLACEMENT_INPUT_TYPE_INVALID"
+
+
+def test_replacement_rejects_invalid_current_type_before_reconciliation():
+    current, source = first_case()
+    assert current.segment is not None
+    previous = previous_for(current.segment)
+    with pytest.raises(SegmentIncrementalReplacementError) as raised:
+        materialize_incremental_segment_replacement(
+            previous=previous,
+            current=object(),
+            source_strokes=source,
+        )
+    assert raised.value.reason_code == "SEGMENT_REPLACEMENT_INPUT_TYPE_INVALID"
+
+
+def test_replacement_maps_candidate_lifecycle_failure_to_stable_reason_code():
+    current, source = first_case()
+    assert current.segment is not None
+    malformed_current = replace(
+        current,
+        segment=replace(current.segment, rule_profile="malformed-profile"),
+    )
+    previous = previous_for(current.segment)
+
+    with pytest.raises(SegmentIncrementalReplacementError) as raised:
+        materialize_incremental_segment_replacement(
+            previous=previous,
+            current=malformed_current,
+            source_strokes=source,
+        )
+
+    assert raised.value.reason_code == "SEGMENT_REPLACEMENT_CANDIDATE_LIFECYCLE_INVALID"
 
 
 def test_replacement_is_deterministic_and_uses_nonhashed_intent_key():
