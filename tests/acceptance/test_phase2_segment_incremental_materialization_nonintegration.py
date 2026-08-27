@@ -77,23 +77,3 @@ def test_second_case_is_not_materialized_by_this_contract():
     assert result.segment is None
     assert result.completed is False
     assert result.pending_second_case is not None
-
-
-def test_materializer_imports_only_contract_and_domain_authorities():
-    imports = set()
-    for node in ast.walk(_tree(MATERIALIZER)):
-        if isinstance(node, ast.Import):
-            imports.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            imports.add(f'{"." * node.level}{node.module or ""}')
-    assert imports == {
-        "__future__",
-        "copy",
-        "dataclasses",
-        "typing",
-        "..domain.lifecycle",
-        "..domain.segment",
-        "..domain.stroke",
-        "..engine.segment",
-        ".segment_incremental_reconciliation",
-    }

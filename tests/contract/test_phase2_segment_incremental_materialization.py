@@ -185,6 +185,8 @@ def test_repeated_materialization_is_deterministic_and_does_not_publish_candidat
     "malformed_stroke",
     "source_binding",
     "candidate_lifecycle",
+    "candidate_invalidated",
+    "candidate_replaced",
     "candidate_revision",
     "candidate_object_id",
     "no_previous",
@@ -231,6 +233,10 @@ def test_materializer_rejects_unsupported_or_unauthenticated_inputs(case):
         )
     elif case == "candidate_lifecycle":
         current = first_case(replace(candidate, status=StructureStatus.PROVISIONAL))
+    elif case == "candidate_invalidated":
+        current = first_case(replace(candidate, invalidated_at_bar=9))
+    elif case == "candidate_replaced":
+        current = first_case(replace(candidate, replaced_by="segment_2_r1"))
     elif case == "candidate_revision":
         current = first_case(replace(candidate, revision=2, object_id="segment_000001_000004_U_r2"))
     elif case == "candidate_object_id":
