@@ -7,6 +7,7 @@ import pytest
 
 from chan_parser.contracts.segment_incremental_reconciliation import (
     SegmentIncrementalReconciliationAction,
+    SegmentIncrementalReconciliationDecision,
     SegmentIncrementalReconciliationError,
 )
 from chan_parser.contracts.segment_incremental_replacement import (
@@ -186,6 +187,8 @@ def test_replacement_is_deterministic_and_uses_nonhashed_intent_key():
         "reconciliation_reason",
         "candidate_event_type",
         "candidate_event_object_id",
+        "candidate_created_intent_key",
+        "candidate_confirmed_intent_key",
         "previous_event_logical_id",
         "previous_event_replaced_by",
         "previous_event_timestamp",
@@ -261,6 +264,30 @@ def test_replacement_result_rejects_direct_envelope_tampering(tamper):
                 replacement_segment_lifecycle_intents=(
                     intent,
                     result.replacement_segment_lifecycle_intents[1],
+                ),
+            )
+        elif tamper == "candidate_created_intent_key":
+            intent = replace(
+                result.replacement_segment_lifecycle_intents[0],
+                intent_key="forged",
+            )
+            replace(
+                result,
+                replacement_segment_lifecycle_intents=(
+                    intent,
+                    result.replacement_segment_lifecycle_intents[1],
+                ),
+            )
+        elif tamper == "candidate_confirmed_intent_key":
+            intent = replace(
+                result.replacement_segment_lifecycle_intents[1],
+                intent_key="forged",
+            )
+            replace(
+                result,
+                replacement_segment_lifecycle_intents=(
+                    result.replacement_segment_lifecycle_intents[0],
+                    intent,
                 ),
             )
         elif tamper == "previous_event_logical_id":
@@ -351,5 +378,46 @@ def test_object_id_collision_has_stable_fail_closed_reason_code():
             previous=previous,
             current=current,
             source_strokes=source,
+        )
+    assert raised.value.reason_code == "SEGMENT_REPLACEMENT_OBJECT_ID_COLLISION"
+
+
+def test_direct_result_rejects_coherent_object_id_collision_envelope():
+    result = replacement_result()
+    candidate = result.replacement_segment
+    collision_previous = replace(
+        result.replaced_previous,
+        object_id=candidate.object_id,
+        revision=1,
+    )
+    collision_decision = SegmentIncrementalReconciliationDecision(
+        action=SegmentIncrementalReconciliationAction.REPLACE_REQUIRED,
+        reason_code="SEGMENT_RECONCILIATION_LOGICAL_ID_CHANGED",
+        previous_logical_id=collision_previous.logical_id,
+        previous_object_id=collision_previous.object_id,
+        previous_revision=collision_previous.revision,
+        previous_content_hash=collision_previous.content_hash(),
+        candidate_logical_id=candidate.logical_id,
+        candidate_content_hash=candidate.content_hash(),
+        next_revision=None,
+    )
+    intent = result.previous_replacement_intent
+    collision_intent = replace(
+        intent,
+        intent_key=(
+            f"segment_replacement:{collision_previous.object_id}:"
+            f"{candidate.object_id}:{intent.occurred_at_bar_id}"
+        ),
+        object_id=collision_previous.object_id,
+    )
+    with pytest.raises(SegmentIncrementalReplacementError) as raised:
+        replace(
+            result,
+            canonical_reconciliation=collision_decision,
+            previous_object_id=collision_previous.object_id,
+            previous_revision=collision_previous.revision,
+            previous_content_hash=collision_previous.content_hash(),
+            replaced_previous=collision_previous,
+            previous_replacement_intent=collision_intent,
         )
     assert raised.value.reason_code == "SEGMENT_REPLACEMENT_OBJECT_ID_COLLISION"

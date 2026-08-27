@@ -14,6 +14,7 @@ from ..contracts.segment_lifecycle import (
     SegmentLifecycleContractError,
     SegmentLifecycleEventIntent,
     derive_segment_lifecycle_intents,
+    filter_new_segment_lifecycle_intents,
 )
 from ..domain.lifecycle import EventType, StructureStatus
 from ..domain.segment import Segment
@@ -149,6 +150,13 @@ class SegmentIncrementalReplacementResult:
         previous = self.replaced_previous
         replacement = self.replacement_segment
         if (
+            self.previous_object_id == self.replacement_object_id
+            or previous.object_id == replacement.object_id
+        ):
+            raise SegmentIncrementalReplacementError(
+                "SEGMENT_REPLACEMENT_OBJECT_ID_COLLISION"
+            )
+        if (
             self.previous_logical_id != decision.previous_logical_id
             or self.previous_object_id != decision.previous_object_id
             or self.previous_revision != decision.previous_revision
@@ -191,6 +199,15 @@ class SegmentIncrementalReplacementResult:
                 "SEGMENT_REPLACEMENT_LIFECYCLE_INTENTS_INVALID"
             )
         created, confirmed = self.replacement_segment_lifecycle_intents
+        try:
+            filter_new_segment_lifecycle_intents(
+                self.replacement_segment_lifecycle_intents,
+                set(),
+            )
+        except SegmentLifecycleContractError as error:
+            raise SegmentIncrementalReplacementError(
+                "SEGMENT_REPLACEMENT_CANDIDATE_LIFECYCLE_INVALID"
+            ) from error
         occurred_at = f"bar_{replacement.confirmed_at_bar + 1:06d}"
         if (
             created.event_type != EventType.CREATED
