@@ -174,6 +174,24 @@ def validate_segment_checkpoint_profile(profile: Mapping[str, Any]) -> None:
     _validate_exact_mapping(profile, _EXPECTED_PROFILE, "profile")
 
 
+def _production_segment_checkpoint_profile() -> dict[str, Any]:
+    """Return the narrow PR25 revision-aware integration profile."""
+    profile = dict(_EXPECTED_PROFILE)
+    profile["profile_id"] = "minimal_segment_checkpoint_production_v2"
+    profile["profile_version"] = "0.2.0"
+    profile["status"] = "INCREMENTAL_PRODUCTION"
+    profile["integration"] = {
+        **profile["integration"],
+        "incremental_integration_enabled": True,
+        "checkpoint_runtime_integration_enabled": True,
+    }
+    profile["checkpoint"] = {
+        **profile["checkpoint"],
+        "revision_aware_formal_segment_enabled": True,
+    }
+    return profile
+
+
 def derive_segment_checkpoint_state(
     *,
     outcome_code: str,
@@ -185,6 +203,8 @@ def derive_segment_checkpoint_state(
 ) -> SegmentCheckpointState:
     """Derive an immutable envelope without mutating or re-running producers."""
 
+    if type(allow_revisions) is not bool:
+        raise TypeError("allow_revisions must be a bool")
     if type(outcome_code) is not str or outcome_code not in _SUPPORTED_OUTCOMES:
         raise SegmentCheckpointContractError(
             "SEGMENT_CHECKPOINT_OUTCOME_UNSUPPORTED"
@@ -259,6 +279,8 @@ def validate_segment_checkpoint_state(
 ) -> None:
     """Require exact equality with a freshly derived canonical envelope."""
 
+    if type(allow_revisions) is not bool:
+        raise TypeError("allow_revisions must be a bool")
     if type(state) is not SegmentCheckpointState:
         raise SegmentCheckpointContractError(
             "SEGMENT_CHECKPOINT_STATE_REQUIRED"

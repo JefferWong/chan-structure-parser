@@ -143,7 +143,6 @@ def materialize_incremental_segment(
     previous: Segment,
     current: SegmentEngineResult,
     source_strokes: Sequence[Stroke],
-    allow_revisions: bool = False,
 ) -> SegmentIncrementalMaterializationResult:
     """Materialize only an authenticated REUSE or REVISE result.
 
@@ -177,10 +176,7 @@ def materialize_incremental_segment(
         raise SegmentIncrementalMaterializationError(
             "SEGMENT_MATERIALIZATION_CANDIDATE_REQUIRED"
         )
-    if (
-        (not allow_revisions and (candidate.object_id != f"{candidate.segment_id}_r1" or candidate.revision != 1))
-        or (allow_revisions and (type(candidate.revision) is not int or candidate.revision < 1))
-    ):
+    if candidate.object_id != f"{candidate.segment_id}_r1" or candidate.revision != 1:
         raise SegmentIncrementalMaterializationError(
             "SEGMENT_MATERIALIZATION_FIRST_REVISION_IDENTITY_INVALID"
         )

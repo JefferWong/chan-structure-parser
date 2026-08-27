@@ -15,7 +15,7 @@ from chan_parser.engine.incremental import IncrementalEngine
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/chan_parser"
 BASELINE = {
-    SOURCE / "contracts/segment_checkpoint.py": "e1224975193d0a683ed9563abdcc4e7356b656c0b882b75eea1630cae983e5de",
+    SOURCE / "contracts/segment_checkpoint.py": "9e1d61e97eec8ed0afa17552754b2276b8c8c8571d711416af7b69be031cbd05",
 }
 
 

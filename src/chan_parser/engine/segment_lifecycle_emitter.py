@@ -78,14 +78,31 @@ class SegmentLifecycleEmitter:
     )
 
     def __init__(self, profile: Mapping[str, Any]):
-        self._validate_exact_mapping(profile, self._EXPECTED_PROFILE, "profile")
-        self.profile_id = self.PROFILE_ID
-        self.profile_version = self.PROFILE_VERSION
+        if profile == self.production_profile():
+            self.profile_id = profile["profile_id"]
+            self.profile_version = profile["profile_version"]
+        else:
+            self._validate_exact_mapping(profile, self._EXPECTED_PROFILE, "profile")
+            self.profile_id = self.PROFILE_ID
+            self.profile_version = self.PROFILE_VERSION
 
     @classmethod
     def reference_profile(cls) -> dict[str, Any]:
         """Return an isolated copy of the authoritative emitter profile."""
         return deepcopy(cls._EXPECTED_PROFILE)
+
+    @classmethod
+    def production_profile(cls) -> dict[str, Any]:
+        profile = deepcopy(cls._EXPECTED_PROFILE)
+        profile["profile_id"] = "minimal_segment_lifecycle_production_v2"
+        profile["profile_version"] = "0.2.0"
+        profile["status"] = "INCREMENTAL_PRODUCTION"
+        profile["integration"] = {
+            **profile["integration"],
+            "checkpoint_integration_enabled": True,
+            "full_incremental_integration_enabled": True,
+        }
+        return profile
 
     def emit(
         self,
@@ -483,10 +500,7 @@ class SegmentLifecycleEmitter:
                 if isinstance(detail, Mapping)
                 else None
             )
-            identity_match = (
-                event.get("logical_id") == logical_id
-                or event.get("object_id") == object_id
-            )
+            identity_match = event.get("object_id") == object_id
             canonical_intent_match = (
                 type(intent_key) is str and intent_key in canonical_by_key
             )

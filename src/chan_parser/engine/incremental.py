@@ -20,6 +20,7 @@ from ..contracts.segment_checkpoint import (
     SegmentCheckpointState,
     derive_segment_checkpoint_state,
     validate_segment_checkpoint_state,
+    _production_segment_checkpoint_profile,
 )
 from ..contracts.segment_incremental_materialization import (
     materialize_incremental_segment,
@@ -142,8 +143,9 @@ class IncrementalEngine:
         self._segments = []
         self._segment_source_strokes = ()
         self._segment_lifecycle_emitter = SegmentLifecycleEmitter(
-            SegmentLifecycleEmitter.reference_profile()
+            SegmentLifecycleEmitter.production_profile()
         )
+        self._segment_checkpoint_profile = _production_segment_checkpoint_profile()
 
     def append_one(self, raw_bar: RawBar) -> dict[str, Any]:
         return self.append_batch([raw_bar])
@@ -212,7 +214,8 @@ class IncrementalEngine:
             if stroke.status == StructureStatus.CONFIRMED
         )
         if not source:
-            self._segments = []
+            if self._segments:
+                raise ValueError("SEGMENT_SOURCE_EMPTY_WITH_PREVIOUS")
             self._segment_source_strokes = ()
             return
         current = SegmentEngine(
@@ -274,7 +277,6 @@ class IncrementalEngine:
             return
         materialized = materialize_incremental_segment(
             previous=previous, current=current, source_strokes=source,
-            allow_revisions=True,
         )
         if materialized.action is SegmentIncrementalReconciliationAction.REVISE:
             self._segment_lifecycle_emitter.emit(
@@ -299,11 +301,13 @@ class IncrementalEngine:
         self._segment_source_strokes = copy.deepcopy(source)
 
     def _preflight_production_checkpoint(self, cp: Checkpoint) -> None:
+        if type(cp.segments) is not list or len(cp.segments) > 1:
+            raise ValueError("SEGMENT_CHECKPOINT_SINGLETON_INVALID")
         if cp.segment_checkpoint_state is None:
             if cp.segments or cp.segment_source_strokes:
                 raise ValueError("SEGMENT_CHECKPOINT_STATE_MISSING")
             return
-        if not cp.segments or not cp.segment_source_strokes:
+        if len(cp.segments) != 1 or not cp.segment_source_strokes:
             raise ValueError("SEGMENT_CHECKPOINT_STATE_MISSING")
         segment = cp.segments[0]
         events = [
@@ -530,6 +534,8 @@ class IncrementalEngine:
         self._next_checkpoint_id += 1
         segment_state = None
         if self.segment_production_enabled and self._segments:
+            if len(self._segments) != 1:
+                raise ValueError("SEGMENT_CHECKPOINT_SINGLETON_INVALID")
             segment = self._segments[0]
             segment_events = [
                 event for event in self._event_log.to_list()

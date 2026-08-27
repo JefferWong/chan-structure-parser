@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import replace
+from copy import deepcopy
 
 import pytest
 import yaml
@@ -13,6 +14,8 @@ from chan_parser.domain.raw_bar import RawBar
 from chan_parser.domain.stroke import Stroke
 from chan_parser.engine.incremental import IncrementalEngine
 from chan_parser.engine.segment import SegmentEngine
+from chan_parser.audit.event_log import EventLog
+from chan_parser.engine.segment_lifecycle_emitter import SegmentLifecycleEmitter
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,7 +25,7 @@ def profile():
 
 
 def bars(start=0):
-    when = datetime(2024, 1, 2, 9, 30)
+    when = datetime(2024, 1, 2, 9, 30) + timedelta(minutes=30 * start)
     return [RawBar(f"bar_{start + 1:06d}", start, when, 100, 102, 99, 101)]
 
 
@@ -115,3 +118,65 @@ def test_production_checkpoint_restores_formal_segment():
     engine._segments = []
     restored = engine.resume_from_checkpoint(checkpoint)
     assert restored["structures"]["segments"] == [expected]
+
+
+def test_rn_lifecycle_history_is_scoped_to_exact_object_revision():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    current = SegmentEngine(SegmentEngine.reference_profile()).process_primary(
+        source, sequence_id="incremental:primary"
+    )
+    log = EventLog()
+    emitter = SegmentLifecycleEmitter(SegmentLifecycleEmitter.production_profile())
+    emitter.emit(result=current, source_strokes=source, event_log=log)
+    r2 = replace(current.segment, revision=2,
+                 object_id=f"{current.segment.segment_id}_r2")
+    emitter.emit(result=replace(current, segment=r2), source_strokes=source, event_log=log)
+    before = len(log)
+    emitter.emit(result=replace(current, segment=r2), source_strokes=source, event_log=log)
+    assert len(log) == before
+    assert [e["object_id"] for e in log.to_list() if e["object_type"] == "segment"] == [
+        current.segment.object_id, current.segment.object_id, r2.object_id, r2.object_id
+    ]
+
+
+def test_empty_current_source_with_previous_fails_closed_and_rolls_back():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    engine = prepared(source, production=True)
+    engine.checkpoint_interval = 0
+    engine.append_batch(bars())
+    checkpoint = engine.create_checkpoint()
+    before = engine.get_current_state()
+    engine.stroke_engine.process = lambda fractals, merged, raw_count: ([], [])
+    with pytest.raises(ValueError, match="SEGMENT_SOURCE_EMPTY_WITH_PREVIOUS"):
+        engine.append_batch(bars(1))
+    assert engine.get_current_state() == before
+    assert engine._checkpoints[checkpoint].segments[0].to_dict() == engine._segments[0].to_dict()
+
+
+def test_checkpoint_rejects_extra_segments_before_live_mutation():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    engine = prepared(source, production=True)
+    engine.checkpoint_interval = 0
+    engine.append_batch(bars())
+    checkpoint = engine.create_checkpoint()
+    before = engine.get_current_state()
+    engine._checkpoints[checkpoint].segments.append(deepcopy(engine._segments[0]))
+    with pytest.raises(ValueError, match="SEGMENT_CHECKPOINT_SINGLETON_INVALID"):
+        engine.resume_from_checkpoint(checkpoint)
+    assert engine.get_current_state() == before
+
+
+def test_production_profile_enables_only_incremental_integration():
+    profile = SegmentLifecycleEmitter.production_profile()
+    assert profile["integration"] == {
+        "full_rebuild_reference_integration_enabled": True,
+        "parser_integration_enabled": False,
+        "checkpoint_integration_enabled": True,
+        "bounded_tail_integration_enabled": False,
+        "full_incremental_integration_enabled": True,
+        "second_case_confirmation_enabled": False,
+        "center_or_zhongshu_enabled": False,
+    }
+    assert SegmentLifecycleEmitter.reference_profile()["integration"][
+        "full_incremental_integration_enabled"
+    ] is False
