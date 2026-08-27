@@ -96,6 +96,7 @@ def test_no_other_production_module_imports_continuity_contract():
     assert importers == {
         SOURCE / "adapters/segment_engine_evaluation.py",
         SOURCE / "contracts/segment_incremental_reconciliation.py",
+        SOURCE / "engine/incremental.py",
     }
 
 

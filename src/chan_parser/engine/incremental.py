@@ -34,6 +34,10 @@ from ..contracts.segment_incremental_reconciliation import (
 from ..contracts.segment_incremental_replacement import (
     materialize_incremental_segment_replacement,
 )
+from ..contracts.segment_incremental_source_continuity import (
+    SegmentIncrementalSourceContinuityError,
+    bind_incremental_segment_source_strokes,
+)
 from .segment_lifecycle_emitter import SegmentLifecycleEmitter
 
 
@@ -58,6 +62,7 @@ class Checkpoint:
     segments: list = None
     segment_source_strokes: tuple = ()
     segment_checkpoint_state: SegmentCheckpointState | None = None
+    segment_metrics: dict | None = None
 
 
 @dataclass
@@ -80,6 +85,7 @@ class _IncrementalProductionRollbackState(_IncrementalReferenceAppendRollbackSta
     historical_snapshots: dict
     checkpoints: dict
     next_checkpoint_id: int
+    segment_metrics: dict
 
 
 def replace_segment_result(result: SegmentEngineResult, segment) -> SegmentEngineResult:
@@ -146,6 +152,11 @@ class IncrementalEngine:
             SegmentLifecycleEmitter.production_profile()
         )
         self._segment_checkpoint_profile = production_segment_checkpoint_profile()
+        self._segment_metrics = {
+            "segment_confirmed_strokes_total": 0,
+            "segment_evaluated_strokes": 0,
+            "segment_fast_reuse": False,
+        }
 
     def append_one(self, raw_bar: RawBar) -> dict[str, Any]:
         return self.append_batch([raw_bar])
@@ -197,6 +208,7 @@ class IncrementalEngine:
             historical_snapshots=copy.deepcopy(self._historical_snapshots),
             checkpoints=copy.deepcopy(self._checkpoints),
             next_checkpoint_id=self._next_checkpoint_id,
+            segment_metrics=copy.deepcopy(self._segment_metrics),
         )
 
     def _restore_production_append_rollback_state(self, state):
@@ -206,6 +218,7 @@ class IncrementalEngine:
         self._historical_snapshots = copy.deepcopy(state.historical_snapshots)
         self._checkpoints = copy.deepcopy(state.checkpoints)
         self._next_checkpoint_id = state.next_checkpoint_id
+        self._segment_metrics = copy.deepcopy(state.segment_metrics)
 
     def _evaluate_segment_production(self) -> None:
         source = tuple(
@@ -213,16 +226,37 @@ class IncrementalEngine:
             for stroke in self._strokes
             if stroke.status == StructureStatus.CONFIRMED
         )
+        self._segment_metrics = {
+            "segment_confirmed_strokes_total": len(source),
+            "segment_evaluated_strokes": 0,
+            "segment_fast_reuse": False,
+        }
         if not source:
             if self._segments:
                 raise ValueError("SEGMENT_SOURCE_EMPTY_WITH_PREVIOUS")
             self._segment_source_strokes = ()
             return
+        previous = self._segments[0] if self._segments else None
+        if previous is not None:
+            try:
+                previous_binding = bind_incremental_segment_source_strokes(
+                    self._segment_source_strokes
+                )
+                current_binding = bind_incremental_segment_source_strokes(source)
+                if (
+                    len(current_binding) > len(previous_binding)
+                    and current_binding[: len(previous_binding)] == previous_binding
+                ):
+                    self._segment_source_strokes = copy.deepcopy(source)
+                    self._segment_metrics["segment_fast_reuse"] = True
+                    return
+            except SegmentIncrementalSourceContinuityError:
+                pass
         current = SegmentEngine(
             SegmentEngine.reference_profile()
         ).process_primary(source, sequence_id="incremental:primary")
         current = copy.deepcopy(current)
-        previous = self._segments[0] if self._segments else None
+        self._segment_metrics["segment_evaluated_strokes"] = len(source)
         if current.reason_code == "SEGMENT_SECOND_CASE_PENDING":
             raise ValueError("SEGMENT_SECOND_CASE_PENDING")
         if (
@@ -579,6 +613,8 @@ class IncrementalEngine:
             segment_source_strokes=copy.deepcopy(self._segment_source_strokes)
             if self.segment_production_enabled else (),
             segment_checkpoint_state=copy.deepcopy(segment_state),
+            segment_metrics=copy.deepcopy(self._segment_metrics)
+            if self.segment_production_enabled else None,
         )
         self._next_checkpoint_id += 1
         self._checkpoints[checkpoint_id] = cp
@@ -626,6 +662,11 @@ class IncrementalEngine:
         self._last_rebuild = copy.deepcopy(cp.last_rebuild)
         self._last_engine_inputs = copy.deepcopy(cp.last_engine_inputs)
         self._max_engine_inputs = copy.deepcopy(cp.max_engine_inputs)
+        self._segment_metrics = copy.deepcopy(cp.segment_metrics or {
+            "segment_confirmed_strokes_total": 0,
+            "segment_evaluated_strokes": 0,
+            "segment_fast_reuse": False,
+        })
         self._checkpoints = {
             retained_id: retained
             for retained_id, retained in self._checkpoints.items()
@@ -674,7 +715,7 @@ class IncrementalEngine:
         }
         if self.segment_reference_enabled:
             audit["segment_reference"] = self.get_segment_reference_result()
-        return {
+        result = {
             "meta": {
                 "symbol": "",
                 "bar_frequency": "",
@@ -710,6 +751,9 @@ class IncrementalEngine:
             "audit": audit,
             "events": self._event_log.to_list(),
         }
+        if self.segment_production_enabled:
+            result["runtime_state"]["segment_metrics"] = copy.deepcopy(self._segment_metrics)
+        return result
 
     def _evaluate_segment_reference(self) -> None:
         self._segment_reference_result = None

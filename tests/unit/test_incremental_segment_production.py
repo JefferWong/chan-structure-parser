@@ -500,3 +500,60 @@ def test_continuous_and_checkpoint_restore_production_paths_are_equivalent():
     assert continuous.get_current_state()["structures"]["segments"] == restored.get_current_state()["structures"]["segments"]
     assert continuous._segment_source_strokes == restored._segment_source_strokes
     assert continuous_events == restored_events
+
+
+def test_pure_extension_uses_bounded_fast_reuse_and_matches_full_oracle():
+    points = [0, 10, 4, 12, 6, 11, 5, 13, 8, 15]
+    sources = [strokes(points[:count]) for count in range(7, len(points) + 1)]
+    engine = prepared(sources[0], production=True)
+    engine.append_batch(bars(0))
+    oracle = SegmentEngine(SegmentEngine.reference_profile()).process_primary(
+        sources[-1], sequence_id="incremental:primary"
+    )
+    original = SegmentEngine.process_primary
+    SegmentEngine.process_primary = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("pure extension must use the bounded fast path")
+    )
+    try:
+        for index, source in enumerate(sources[1:], 1):
+            engine.stroke_engine.process = lambda fractals, merged, raw_count, source=source: (source, [])
+            state = engine.append_batch(bars(index))
+            assert state["runtime_state"]["segment_metrics"] == {
+                "segment_confirmed_strokes_total": len(source),
+                "segment_evaluated_strokes": 0,
+                "segment_fast_reuse": True,
+            }
+    finally:
+        SegmentEngine.process_primary = original
+    assert state["structures"]["segments"][0] == oracle.segment.to_dict()
+
+
+def test_uncertain_source_falls_back_to_full_source_evaluation():
+    source = strokes([0, 10, 4, 12, 6, 11, 5])
+    changed = deepcopy(source)
+    for stroke in changed:
+        stroke.start_price += 1
+        stroke.end_price += 1
+        stroke.max_price += 1
+        stroke.min_price += 1
+    engine = prepared(source, production=True)
+    engine.append_batch(bars(0))
+    engine.stroke_engine.process = lambda fractals, merged, raw_count: (changed, [])
+    calls = []
+    original = SegmentEngine.process_primary
+
+    def counted(self, input_source, **kwargs):
+        calls.append(len(input_source))
+        return original(self, input_source, **kwargs)
+
+    SegmentEngine.process_primary = counted
+    try:
+        state = engine.append_batch(bars(1))
+    finally:
+        SegmentEngine.process_primary = original
+    assert calls == [len(changed)]
+    assert state["runtime_state"]["segment_metrics"] == {
+        "segment_confirmed_strokes_total": len(changed),
+        "segment_evaluated_strokes": len(changed),
+        "segment_fast_reuse": False,
+    }
