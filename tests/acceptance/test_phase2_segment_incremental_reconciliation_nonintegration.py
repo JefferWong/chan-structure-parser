@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/chan_parser"
 CONTRACT = SOURCE / "contracts/segment_incremental_reconciliation.py"
 MATERIALIZER = SOURCE / "contracts/segment_incremental_materialization.py"
+REPLACEMENT = SOURCE / "contracts/segment_incremental_replacement.py"
 FROZEN_RUNTIME_FILES = (
     SOURCE / "engine/incremental.py",
     SOURCE / "engine/full_rebuild.py",
@@ -107,7 +108,7 @@ def test_contract_does_not_construct_segments_or_duplicate_identity_algorithms()
 
 def test_runtime_checkpoint_and_parser_sources_do_not_import_contract():
     for path in SOURCE.rglob("*.py"):
-        if path in {CONTRACT, MATERIALIZER}:
+        if path in {CONTRACT, MATERIALIZER, REPLACEMENT}:
             continue
         assert "segment_incremental_reconciliation" not in path.read_text(encoding="utf-8")
     for path in FROZEN_RUNTIME_FILES:

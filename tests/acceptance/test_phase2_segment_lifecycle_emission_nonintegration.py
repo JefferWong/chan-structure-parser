@@ -103,7 +103,10 @@ def test_only_emitter_imports_lifecycle_contract_in_production():
         if path != contract
         and "..contracts.segment_lifecycle" in _import_paths(_tree(path))
     }
-    assert importers == {EMITTER}
+    assert importers == {
+        EMITTER,
+        SOURCE / "contracts/segment_incremental_replacement.py",
+    }
 
 
 def test_parser_checkpoint_and_bounded_tail_remain_unintegrated():
