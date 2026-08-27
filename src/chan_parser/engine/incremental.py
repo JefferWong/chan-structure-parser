@@ -382,7 +382,7 @@ class IncrementalEngine:
         if self.segment_reference_enabled:
             try:
                 self._evaluate_segment_reference()
-            except Exception:
+            except BaseException:
                 self._segment_reference_result = None
                 self._segment_reference_source_strokes = ()
                 raise

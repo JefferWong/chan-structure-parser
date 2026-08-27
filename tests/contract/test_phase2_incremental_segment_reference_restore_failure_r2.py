@@ -334,12 +334,19 @@ def test_post_reference_failures_do_not_enter_r2_handler(monkeypatch, downstream
     assert original_restore is not None
 
 
-def test_baseexception_is_not_caught():
+def test_baseexception_partial_reference_cache_is_cleared_and_reraised():
     engine, checkpoint_id, _, _ = restore_fixture()
     marker = KeyboardInterrupt("base-exception")
-    engine._evaluate_segment_reference = lambda: (_ for _ in ()).throw(marker)
+
+    def partially_fail() -> None:
+        engine._segment_reference_result = object()
+        engine._segment_reference_source_strokes = ("failed-source",)
+        raise marker
+
+    engine._evaluate_segment_reference = partially_fail
 
     with pytest.raises(KeyboardInterrupt) as exc:
         engine.resume_from_checkpoint(checkpoint_id)
 
     assert exc.value is marker
+    assert_reference_cleared(engine)
