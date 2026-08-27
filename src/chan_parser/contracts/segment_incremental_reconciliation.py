@@ -14,6 +14,12 @@ from enum import Enum
 from ..domain.lifecycle import StructureStatus, StrokeDirection
 from ..domain.segment import Segment
 from ..domain.stroke import Stroke
+from .segment_incremental_source_continuity import (
+    SegmentIncrementalSourceContinuityAction,
+    SegmentIncrementalSourceContinuityDecision,
+    SegmentIncrementalSourceContinuityError,
+    evaluate_incremental_segment_source_continuity,
+)
 from ..engine.segment import SegmentEngineResult
 
 
@@ -21,6 +27,10 @@ __all__ = (
     "SegmentIncrementalReconciliationAction",
     "SegmentIncrementalReconciliationDecision",
     "SegmentIncrementalReconciliationError",
+    "SegmentIncrementalTransientPolicyAction",
+    "SegmentIncrementalTransientPolicyDecision",
+    "SegmentIncrementalTransientPolicyError",
+    "evaluate_incremental_segment_transient_policy",
     "reconcile_incremental_segment",
 )
 
@@ -31,6 +41,121 @@ class SegmentIncrementalReconciliationError(ValueError):
     def __init__(self, reason_code: str):
         self.reason_code = reason_code
         super().__init__(reason_code)
+
+
+class SegmentIncrementalTransientPolicyError(ValueError):
+    """Raised when a transient retention decision cannot be authenticated."""
+
+    def __init__(self, reason_code: str):
+        self.reason_code = reason_code
+        super().__init__(reason_code)
+
+
+class SegmentIncrementalTransientPolicyAction(str, Enum):
+    """Closed transient policy actions; neither mutates lifecycle state."""
+
+    RETAIN_PREVIOUS = "RETAIN_PREVIOUS"
+    FAIL_CLOSED = "FAIL_CLOSED"
+
+
+@dataclass(frozen=True)
+class SegmentIncrementalTransientPolicyDecision:
+    """Immutable policy result with the complete authenticated decision evidence."""
+
+    action: SegmentIncrementalTransientPolicyAction
+    reason_code: str
+    current_outcome_code: str
+    previous_logical_id: str
+    previous_object_id: str
+    previous_revision: int
+    previous_content_hash: str
+    source_continuity_action: SegmentIncrementalSourceContinuityAction
+    bound_prefix_length: int
+    source_continuity_decision: SegmentIncrementalSourceContinuityDecision
+
+    def __post_init__(self) -> None:
+        if type(self.action) is not SegmentIncrementalTransientPolicyAction:
+            raise SegmentIncrementalTransientPolicyError(
+                "SEGMENT_TRANSIENT_POLICY_DECISION_ACTION_INVALID"
+            )
+        if (
+            type(self.current_outcome_code) is not str
+            or self.current_outcome_code not in _NONMATERIALIZED_OUTCOMES
+        ):
+            raise SegmentIncrementalTransientPolicyError(
+                "SEGMENT_TRANSIENT_POLICY_OUTCOME_INVALID"
+            )
+        if (
+            type(self.source_continuity_action)
+            is not SegmentIncrementalSourceContinuityAction
+        ):
+            raise SegmentIncrementalTransientPolicyError(
+                "SEGMENT_TRANSIENT_POLICY_CONTINUITY_ACTION_INVALID"
+            )
+        if (
+            type(self.source_continuity_decision)
+            is not SegmentIncrementalSourceContinuityDecision
+            or self.source_continuity_decision.action
+            is not self.source_continuity_action
+            or self.source_continuity_decision.bound_prefix_length
+            != self.bound_prefix_length
+        ):
+            raise SegmentIncrementalTransientPolicyError(
+                "SEGMENT_TRANSIENT_POLICY_CONTINUITY_EVIDENCE_INVALID"
+            )
+        if (
+            type(self.previous_logical_id) is not str
+            or not self.previous_logical_id
+            or type(self.previous_object_id) is not str
+            or not self.previous_object_id
+            or type(self.previous_revision) is not int
+            or self.previous_revision < 1
+            or type(self.previous_content_hash) is not str
+            or not self.previous_content_hash
+            or type(self.bound_prefix_length) is not int
+            or self.bound_prefix_length < 1
+        ):
+            raise SegmentIncrementalTransientPolicyError(
+                "SEGMENT_TRANSIENT_POLICY_PREVIOUS_EVIDENCE_INVALID"
+            )
+        previous = self.source_continuity_decision.previous_binding
+        if (
+            self.previous_logical_id != previous.logical_id
+            or self.previous_object_id != previous.object_id
+            or self.previous_revision != previous.revision
+            or self.previous_content_hash != previous.content_hash
+        ):
+            raise SegmentIncrementalTransientPolicyError(
+                "SEGMENT_TRANSIENT_POLICY_PREVIOUS_EVIDENCE_MISMATCH"
+            )
+        expected_action = (
+            SegmentIncrementalTransientPolicyAction.RETAIN_PREVIOUS
+            if self.current_outcome_code
+            in {
+                "SEGMENT_FEATURE_WINDOW_INCOMPLETE",
+                "SEGMENT_PRIMARY_FRACTAL_NOT_FOUND",
+            }
+            and self.source_continuity_action
+            is SegmentIncrementalSourceContinuityAction.PRESERVED
+            else SegmentIncrementalTransientPolicyAction.FAIL_CLOSED
+        )
+        if self.action is not expected_action:
+            raise SegmentIncrementalTransientPolicyError(
+                "SEGMENT_TRANSIENT_POLICY_DECISION_INVARIANT_INVALID"
+            )
+        expected_reason = (
+            "SEGMENT_TRANSIENT_PREVIOUS_RETAINED"
+            if self.action is SegmentIncrementalTransientPolicyAction.RETAIN_PREVIOUS
+            else (
+                "SEGMENT_TRANSIENT_SECOND_CASE_PENDING"
+                if self.current_outcome_code == "SEGMENT_SECOND_CASE_PENDING"
+                else "SEGMENT_TRANSIENT_SOURCE_CONTINUITY_BROKEN"
+            )
+        )
+        if self.reason_code != expected_reason:
+            raise SegmentIncrementalTransientPolicyError(
+                "SEGMENT_TRANSIENT_POLICY_REASON_INVALID"
+            )
 
 
 class SegmentIncrementalReconciliationAction(str, Enum):
@@ -141,6 +266,106 @@ _NONMATERIALIZED_OUTCOMES = frozenset(
         "SEGMENT_SECOND_CASE_PENDING",
     }
 )
+
+
+def evaluate_incremental_segment_transient_policy(
+    *,
+    previous: Segment,
+    current: SegmentEngineResult,
+    previous_source_strokes: Sequence[Stroke],
+    current_source_strokes: Sequence[Stroke],
+) -> SegmentIncrementalTransientPolicyDecision:
+    """Decide transient retention from authenticated previous/source evidence."""
+
+    continuity = _evaluate_transient_continuity(
+        previous=previous,
+        previous_source_strokes=previous_source_strokes,
+        current_source_strokes=current_source_strokes,
+    )
+    outcome = _validate_transient_current(current)
+    retained = (
+        outcome
+        in {
+            "SEGMENT_FEATURE_WINDOW_INCOMPLETE",
+            "SEGMENT_PRIMARY_FRACTAL_NOT_FOUND",
+        }
+        and continuity.action is SegmentIncrementalSourceContinuityAction.PRESERVED
+    )
+    action = (
+        SegmentIncrementalTransientPolicyAction.RETAIN_PREVIOUS
+        if retained
+        else SegmentIncrementalTransientPolicyAction.FAIL_CLOSED
+    )
+    reason_code = (
+        "SEGMENT_TRANSIENT_PREVIOUS_RETAINED"
+        if retained
+        else (
+            "SEGMENT_TRANSIENT_SECOND_CASE_PENDING"
+            if outcome == "SEGMENT_SECOND_CASE_PENDING"
+            else "SEGMENT_TRANSIENT_SOURCE_CONTINUITY_BROKEN"
+        )
+    )
+    previous_binding = continuity.previous_binding
+    return SegmentIncrementalTransientPolicyDecision(
+        action=action,
+        reason_code=reason_code,
+        current_outcome_code=outcome,
+        previous_logical_id=previous_binding.logical_id,
+        previous_object_id=previous_binding.object_id,
+        previous_revision=previous_binding.revision,
+        previous_content_hash=previous_binding.content_hash,
+        source_continuity_action=continuity.action,
+        bound_prefix_length=continuity.bound_prefix_length,
+        source_continuity_decision=continuity,
+    )
+
+
+def _evaluate_transient_continuity(
+    *,
+    previous: Segment,
+    previous_source_strokes: Sequence[Stroke],
+    current_source_strokes: Sequence[Stroke],
+) -> SegmentIncrementalSourceContinuityDecision:
+    try:
+        return evaluate_incremental_segment_source_continuity(
+            previous=previous,
+            previous_source_strokes=previous_source_strokes,
+            current_source_strokes=current_source_strokes,
+        )
+    except SegmentIncrementalSourceContinuityError as error:
+        raise SegmentIncrementalTransientPolicyError(error.reason_code) from error
+
+
+def _validate_transient_current(current: SegmentEngineResult) -> str:
+    if type(current) is not SegmentEngineResult:
+        raise SegmentIncrementalTransientPolicyError(
+            "SEGMENT_TRANSIENT_POLICY_CURRENT_TYPE_INVALID"
+        )
+    if (
+        type(current.reason_code) is not str
+        or current.reason_code not in _NONMATERIALIZED_OUTCOMES
+    ):
+        raise SegmentIncrementalTransientPolicyError(
+            "SEGMENT_TRANSIENT_POLICY_OUTCOME_UNSUPPORTED"
+        )
+    if type(current.candidate_direction) is not StrokeDirection:
+        raise SegmentIncrementalTransientPolicyError(
+            "SEGMENT_TRANSIENT_POLICY_CANDIDATE_DIRECTION_INVALID"
+        )
+    if current.segment is not None or current.completed is not False:
+        raise SegmentIncrementalTransientPolicyError(
+            "SEGMENT_TRANSIENT_POLICY_NONMATERIALIZED_SHAPE_INVALID"
+        )
+    if current.reason_code == "SEGMENT_SECOND_CASE_PENDING":
+        if current.pending_second_case is None:
+            raise SegmentIncrementalTransientPolicyError(
+                "SEGMENT_TRANSIENT_POLICY_PENDING_SECOND_CASE_SHAPE_INVALID"
+            )
+    elif current.pending_second_case is not None:
+        raise SegmentIncrementalTransientPolicyError(
+            "SEGMENT_TRANSIENT_POLICY_NONMATERIALIZED_SHAPE_INVALID"
+        )
+    return current.reason_code
 
 
 def reconcile_incremental_segment(

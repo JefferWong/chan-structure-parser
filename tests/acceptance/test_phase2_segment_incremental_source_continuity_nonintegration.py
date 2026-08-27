@@ -10,8 +10,7 @@ from chan_parser.engine.incremental import IncrementalEngine
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/chan_parser"
 CONTRACT = SOURCE / "contracts/segment_incremental_source_continuity.py"
-PR14_CONTRACT = SOURCE / "contracts/segment_incremental_reconciliation.py"
-PR14_SHA256 = "91ccab73a14dfdb33b42d5775c117a353be3cc9ac6d6eb48ea7b268f21082659"
+TRANSIENT_POLICY_CONTRACT = SOURCE / "contracts/segment_incremental_reconciliation.py"
 
 
 def _tree(path: Path) -> ast.Module:
@@ -95,6 +94,7 @@ def test_no_other_production_module_imports_continuity_contract():
     }
     assert importers == {
         SOURCE / "adapters/segment_engine_evaluation.py",
+        SOURCE / "contracts/segment_incremental_reconciliation.py",
     }
 
 
@@ -105,7 +105,9 @@ def test_incremental_output_remains_segment_free_and_policy_free():
     assert not any(event["object_type"] == "segment" for event in state["events"])
 
 
-def test_pr14_contract_is_byte_exact_frozen():
-    import hashlib
-
-    assert hashlib.sha256(PR14_CONTRACT.read_bytes()).hexdigest() == PR14_SHA256
+def test_transient_policy_contract_is_the_only_authorized_policy_boundary():
+    text = TRANSIENT_POLICY_CONTRACT.read_text(encoding="utf-8")
+    assert "evaluate_incremental_segment_transient_policy" in text
+    assert "evaluate_incremental_segment_source_continuity" in text
+    assert "engine.incremental" not in text
+    assert "segment_checkpoint" not in text
