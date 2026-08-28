@@ -101,3 +101,52 @@ def test_disallowed_unconfirmed_tail_emits_invalidation_event():
     assert len(invalidated) == 1
     assert invalidated[0].object_id == created[0].object_id
     assert invalidated[0].reason_code == "UNCONFIRMED_TAIL_NOT_ALLOWED"
+
+
+def test_same_type_anchor_replacement_cannot_confirm_a_stale_tail_chain():
+    """A later extreme anchor must carry the active provisional tail with it."""
+    bars = []
+    for index in range(27):
+        high, low = 100, 95
+        if index == 0:
+            high = 110
+        if index == 5:
+            low = 90
+        if index == 10:
+            high = 120
+        if index == 15:
+            high = 130
+        if index == 20:
+            low = 70
+        if index == 26:
+            high = 140
+        bars.append(make_mbar(index, low + 1, high, low, high - 1))
+
+    fractals = [
+        make_fractal("t0", FractalType.TOP, 0, 110),
+        make_fractal("b5", FractalType.BOTTOM, 5, 90),
+        make_fractal("t10", FractalType.TOP, 10, 120),
+        # Too close to t10, so the anchor remains t10.
+        make_fractal("b12", FractalType.BOTTOM, 12, 80),
+        # Supersedes t10 while b5 -> t10 is still provisional.
+        make_fractal("t15", FractalType.TOP, 15, 130),
+        make_fractal("b20", FractalType.BOTTOM, 20, 70),
+        make_fractal("t26", FractalType.TOP, 26, 140),
+    ]
+
+    strokes, _ = StrokeEngine({
+        "mode": "strict",
+        "alternating_fractals_required": True,
+        "minimum_merged_bar_count": 5,
+        "endpoint_extreme_required": True,
+        "allow_unconfirmed_tail": True,
+    }).process(fractals, bars, len(bars))
+
+    confirmed = [stroke for stroke in strokes if stroke.status == StructureStatus.CONFIRMED]
+    assert len(confirmed) == 3
+    for previous, current in zip(confirmed, confirmed[1:]):
+        assert previous.direction != current.direction
+        assert previous.end_fractal_id == current.start_fractal_id
+        assert previous.end_bar_index == current.start_bar_index
+        assert previous.end_price == current.start_price
+    assert confirmed[1].end_fractal_id == "t15"

@@ -36,6 +36,7 @@ class StrokeEngine:
         )
         anchor = fractals[0]
         counter = id_offset + 1
+        fractal_by_id = {fractal.fractal_id: fractal for fractal in fractals}
         for candidate in fractals[1:]:
             if candidate.fractal_type == anchor.fractal_type:
                 winner = self._more_extreme(anchor, candidate)
@@ -56,6 +57,68 @@ class StrokeEngine:
                         "fractal_type": candidate.fractal_type.value,
                     },
                 ))
+                if (
+                    winner is candidate
+                    and strokes
+                    and strokes[-1].status == StructureStatus.PROVISIONAL
+                    and strokes[-1].end_fractal_id == anchor.fractal_id
+                ):
+                    provisional = strokes[-1]
+                    start = fractal_by_id.get(provisional.start_fractal_id)
+                    if start is None:
+                        raise ValueError(
+                            "PHASE1_PROVISIONAL_TAIL_START_NOT_FOUND"
+                        )
+                    valid, reason, detail = self._validate(
+                        start, winner, merged_bars, bar_index_offset
+                    )
+                    provisional.mark_invalidated(
+                        provisional.end_bar_index,
+                        "SAME_TYPE_ANCHOR_REPLACED",
+                    )
+                    events.append(LifecycleEvent(
+                        event_type=EventType.INVALIDATED,
+                        object_type="stroke",
+                        object_id=provisional.object_id,
+                        logical_id=provisional.logical_id,
+                        occurred_at_bar_id=(
+                            candidate.right_bar_id or candidate.merged_bar_id
+                        ),
+                        reason_code="SAME_TYPE_PROVISIONAL_TAIL_REPLACED",
+                        replaced_by=None,
+                        rule_profile=self.rule_profile,
+                        rule_version=self.rule_version,
+                        detail={"replacement_reason": reason},
+                    ))
+                    strokes.pop()
+                    if valid:
+                        replacement = self._create_stroke(
+                            start,
+                            winner,
+                            merged_bars,
+                            counter,
+                            bar_index_offset,
+                        )
+                        counter += 1
+                        strokes.append(replacement)
+                        events.append(LifecycleEvent(
+                            event_type=EventType.CREATED,
+                            object_type="stroke",
+                            object_id=replacement.object_id,
+                            logical_id=replacement.logical_id,
+                            occurred_at_bar_id=(
+                                candidate.right_bar_id or candidate.merged_bar_id
+                            ),
+                            reason_code="SAME_TYPE_PROVISIONAL_TAIL_REVISED",
+                            replaced_by=None,
+                            rule_profile=self.rule_profile,
+                            rule_version=self.rule_version,
+                            detail={
+                                "start_bar_index": replacement.start_bar_index,
+                                "end_bar_index": replacement.end_bar_index,
+                                "direction": replacement.direction.value,
+                            },
+                        ))
                 anchor = winner
                 continue
             valid, reason, detail = self._validate(anchor, candidate, merged_bars, bar_index_offset)
@@ -137,7 +200,23 @@ class StrokeEngine:
                     rule_version=self.rule_version,
                 ))
             strokes = kept
+        self._validate_confirmed_chain(strokes)
         return strokes, events
+
+    @staticmethod
+    def _validate_confirmed_chain(strokes: list[Stroke]) -> None:
+        confirmed = [
+            stroke for stroke in strokes
+            if stroke.status == StructureStatus.CONFIRMED
+        ]
+        for previous, current in zip(confirmed, confirmed[1:]):
+            if (
+                previous.direction == current.direction
+                or previous.end_fractal_id != current.start_fractal_id
+                or previous.end_bar_index != current.start_bar_index
+                or previous.end_price != current.start_price
+            ):
+                raise ValueError("PHASE1_CONFIRMED_STROKE_CHAIN_INVALID")
 
     @staticmethod
     def _more_extreme(a: Fractal, b: Fractal) -> Fractal:
