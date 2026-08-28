@@ -581,6 +581,29 @@ def test_tail_inclusion_pure_extension_revises_previous_segment_from_full_oracle
     assert state["runtime_state"]["segment_metrics"]["segment_evaluated_strokes"] == len(extended)
 
 
+@pytest.mark.parametrize("points", [
+    [0, 10, 4, 12, 6, 11, 5, 13, 8, 15, 9, 16],
+    [0, 10, 4, 12, 6, 11, 5, 10, 6, 9, 7, 8],
+])
+def test_fixed_generated_extensions_match_full_source_oracle_at_every_boundary(points):
+    sources = [strokes(points[:count]) for count in range(7, len(points) + 1)]
+    engine = prepared(sources[0], production=True)
+    engine.checkpoint_interval = 0
+    for index, source in enumerate(sources):
+        engine.stroke_engine.process = lambda fractals, merged, raw_count, source=source: (source, [])
+        state = engine.append_batch(bars(index))
+        oracle = SegmentEngine(SegmentEngine.reference_profile()).process_primary(
+            source, sequence_id="incremental:primary"
+        )
+        assert oracle.reason_code == "SEGMENT_FIRST_CASE_CONFIRMED"
+        optimized = state["structures"]["segments"][0]
+        expected = oracle.segment.to_dict()
+        for semantic in (optimized, expected):
+            semantic.pop("object_id")
+            semantic.pop("revision")
+        assert optimized == expected
+
+
 def test_uncertain_source_falls_back_to_full_source_evaluation():
     source = strokes([0, 10, 4, 12, 6, 11, 5])
     changed = deepcopy(source)
