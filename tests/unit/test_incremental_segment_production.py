@@ -287,6 +287,9 @@ def test_incremental_replace_required_uses_pr24_materializer():
     assert state["structures"]["segments"][0]["revision"] == 1
     assert [e["event_type"] for e in events] == ["OBJECT_CREATED", "OBJECT_CONFIRMED", "STRUCTURE_REPLACED"]
     assert events[-1]["reason_code"] == "SEGMENT_RECONCILIATION_LOGICAL_ID_CHANGED"
+    assert engine._segment_source_strokes == tuple(source2)
+    checkpoint = engine.create_checkpoint()
+    assert engine._checkpoints[checkpoint].segment_source_strokes == tuple(source2)
 
 
 @pytest.mark.parametrize("reason", ["SEGMENT_FEATURE_WINDOW_INCOMPLETE", "SEGMENT_PRIMARY_FRACTAL_NOT_FOUND"])
@@ -535,6 +538,59 @@ def test_pure_extension_uses_bounded_fast_reuse_and_matches_full_oracle():
     assert state["structures"]["segments"][0] == oracle.segment.to_dict()
 
 
+def test_sealed_fast_reuse_at_automatic_checkpoint_preserves_lifecycle_source():
+    points = [0, 10, 4, 12, 6, 11, 5, 13, 8, 15]
+    sources = [strokes(points[:count]) for count in range(7, len(points) + 1)]
+    engine = prepared(sources[0], production=True)
+    engine.checkpoint_interval = 4
+    engine.append_batch(bars(0))
+    formal_source = deepcopy(engine._segment_source_strokes)
+    engine.stroke_engine.process = lambda fractals, merged, raw_count: (sources[1], [])
+    engine.append_batch(bars(1))
+    engine.stroke_engine.process = lambda fractals, merged, raw_count: (sources[2], [])
+    engine.append_batch(bars(2))
+    assert engine._last_full_result_sealed is True
+
+    engine.stroke_engine.process = lambda fractals, merged, raw_count: (sources[3], [])
+    before_events = len([e for e in engine.get_current_state()["events"] if e["object_type"] == "segment"])
+    state = engine.append_batch(bars(3))
+    after_events = len([e for e in state["events"] if e["object_type"] == "segment"])
+    checkpoint_id = max(engine._checkpoints)
+    checkpoint = engine._checkpoints[checkpoint_id]
+
+    assert state["runtime_state"]["segment_metrics"]["segment_fast_reuse"] is True
+    assert state["runtime_state"]["segment_metrics"]["segment_evaluated_strokes"] == 0
+    assert after_events == before_events
+    assert engine._segment_source_strokes == formal_source
+    assert checkpoint_id == 0
+    assert engine._next_checkpoint_id == 1
+    assert checkpoint.segment_source_strokes == formal_source
+    assert checkpoint.segment_source_strokes != tuple(sources[3])
+    assert engine.resume_from_checkpoint(checkpoint_id)["structures"]["segments"] == state["structures"]["segments"]
+
+
+def test_full_reuse_at_automatic_checkpoint_preserves_lifecycle_source():
+    base = strokes([0, 10, 4, 12, 6, 11, 5])
+    extended = strokes([0, 10, 4, 12, 6, 11, 5, 13])
+    engine = prepared(base, production=True)
+    engine.checkpoint_interval = 2
+    engine.append_batch(bars(0))
+    formal_source = deepcopy(engine._segment_source_strokes)
+    engine._last_full_result_sealed = False
+    engine.stroke_engine.process = lambda fractals, merged, raw_count: (extended, [])
+    before_events = len([e for e in engine.get_current_state()["events"] if e["object_type"] == "segment"])
+    state = engine.append_batch(bars(1))
+    after_events = len([e for e in state["events"] if e["object_type"] == "segment"])
+    checkpoint = engine._checkpoints[0]
+
+    assert state["runtime_state"]["segment_metrics"]["segment_fast_reuse"] is False
+    assert state["runtime_state"]["segment_metrics"]["segment_evaluated_strokes"] == len(extended)
+    assert after_events == before_events
+    assert engine._segment_source_strokes == formal_source
+    assert checkpoint.segment_source_strokes == formal_source
+    assert engine.resume_from_checkpoint(0)["structures"]["segments"] == state["structures"]["segments"]
+
+
 def test_tail_inclusion_pure_extension_revises_previous_segment_from_full_oracle():
     base = strokes([0, 10, 4, 12, 6, 11, 5])
     extended = strokes([0, 10, 4, 12, 6, 11, 5, 10, 6])
@@ -579,6 +635,9 @@ def test_tail_inclusion_pure_extension_revises_previous_segment_from_full_oracle
     assert state["runtime_state"]["segment_metrics"]["segment_fast_reuse"] is False
     assert calls == [len(extended)]
     assert state["runtime_state"]["segment_metrics"]["segment_evaluated_strokes"] == len(extended)
+    assert engine._segment_source_strokes == tuple(extended)
+    checkpoint = engine.create_checkpoint()
+    assert engine._checkpoints[checkpoint].segment_source_strokes == tuple(extended)
 
 
 @pytest.mark.parametrize("points", [

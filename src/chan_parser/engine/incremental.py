@@ -278,7 +278,6 @@ class IncrementalEngine:
                     and previous.logical_id == self._last_full_segment_logical_id
                     and previous.content_hash() == self._last_full_segment_content_hash
                 ):
-                    self._segment_source_strokes = copy.deepcopy(source)
                     self._segment_metrics["segment_fast_reuse"] = True
                     return
             except SegmentIncrementalSourceContinuityError:
@@ -404,7 +403,8 @@ class IncrementalEngine:
                 source_strokes=source, event_log=self._event_log,
             )
         self._segments = [materialized.materialized_segment]
-        self._segment_source_strokes = copy.deepcopy(source)
+        if materialized.action is not SegmentIncrementalReconciliationAction.REUSE:
+            self._segment_source_strokes = copy.deepcopy(source)
 
     def _preflight_production_checkpoint(self, cp: Checkpoint) -> None:
         if type(cp.segments) is not list or len(cp.segments) > 1:
