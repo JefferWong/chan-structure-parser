@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from pathlib import Path
 import json
+import hashlib
 import subprocess
 import sys
 
@@ -68,6 +69,39 @@ def test_daily_production_output_contains_structures_segments_and_metrics(tmp_pa
     assert state["runtime_state"]["checkpoint_count"] >= 1
     assert state["meta"]["symbol"] == "600519.SH"
     assert state["meta"]["bar_frequency"] == "1d"
+    assert state["audit"]["input_checksum"]
+    assert "input_sha256" not in state["audit"]
+
+
+def test_daily_output_hash_marker_matches_written_bytes_and_semantic_hash_is_stable(tmp_path, capsys):
+    input_path = write_fixture(tmp_path)
+    output_path = tmp_path / "hashed.json"
+    run_daily(
+        input_path=str(input_path), output_path=str(output_path),
+        profile_path=str(PROFILE_PATH), symbol="X",
+        now=datetime(2026, 8, 28, 16),
+    )
+    markers = dict(
+        line.split("=", 1)
+        for line in capsys.readouterr().out.splitlines()
+        if "=" in line
+    )
+    assert len(markers["OUTPUT_SHA256"]) == 64
+    assert markers["OUTPUT_SHA256"] == hashlib.sha256(output_path.read_bytes()).hexdigest()
+    assert len(markers["OUTPUT_SEMANTIC_HASH"]) == 16
+
+    second_path = tmp_path / "hashed-second.json"
+    run_daily(
+        input_path=str(input_path), output_path=str(second_path),
+        profile_path=str(PROFILE_PATH), symbol="X",
+        now=datetime(2026, 8, 28, 16),
+    )
+    second_markers = dict(
+        line.split("=", 1)
+        for line in capsys.readouterr().out.splitlines()
+        if "=" in line
+    )
+    assert second_markers["OUTPUT_SEMANTIC_HASH"] == markers["OUTPUT_SEMANTIC_HASH"]
 
 
 def test_installed_declared_chan_parse_daily_command(tmp_path):
@@ -192,6 +226,79 @@ def test_daily_rejects_invalid_input_profile_and_minimum(tmp_path):
     profile_path.write_text(yaml.safe_dump(close_only), encoding="utf-8")
     with pytest.raises(DailyReleaseError, match="DAILY_PROFILE_NOT_CLOSE_ONLY"):
         run_daily(input_path=str(short_path), output_path=str(output_path), profile_path=str(profile_path), symbol="X", now=datetime(2026, 8, 28, 16))
+
+
+@pytest.mark.parametrize("profile_text", ["null\n", "[]\n", "abc\n"])
+def test_daily_rejects_malformed_top_level_profiles(tmp_path, profile_text):
+    input_path = write_fixture(tmp_path)
+    profile_path = tmp_path / "malformed.yaml"
+    profile_path.write_text(profile_text, encoding="utf-8")
+    with pytest.raises(DailyReleaseError, match="DAILY_INPUT_INVALID"):
+        run_daily(input_path=str(input_path), output_path=str(tmp_path / "result.json"), profile_path=str(profile_path), symbol="X", now=datetime(2026, 8, 28, 16))
+
+
+@pytest.mark.parametrize("field", ["runtime", "data_quality"])
+def test_daily_rejects_non_mapping_profile_sections(tmp_path, field):
+    input_path = write_fixture(tmp_path)
+    malformed = profile()
+    malformed[field] = []
+    profile_path = tmp_path / f"malformed-{field}.yaml"
+    profile_path.write_text(yaml.safe_dump(malformed), encoding="utf-8")
+    with pytest.raises(DailyReleaseError, match="DAILY_INPUT_INVALID"):
+        run_daily(input_path=str(input_path), output_path=str(tmp_path / "result.json"), profile_path=str(profile_path), symbol="X", now=datetime(2026, 8, 28, 16))
+
+
+@pytest.mark.parametrize("close_time", ["15:00+08:00", "not-a-time"])
+def test_daily_rejects_invalid_close_time(tmp_path, close_time):
+    input_path = write_fixture(tmp_path)
+    with pytest.raises(DailyReleaseError, match="DAILY_INPUT_INVALID"):
+        run_daily(input_path=str(input_path), output_path=str(tmp_path / "result.json"), profile_path=str(PROFILE_PATH), symbol="X", close_time=close_time, now=datetime(2026, 8, 28, 16))
+
+
+@pytest.mark.parametrize("collision", ["input", "profile"])
+def test_daily_rejects_output_path_collisions_without_changing_sources(tmp_path, collision):
+    input_path = write_fixture(tmp_path)
+    profile_path = PROFILE_PATH
+    output_path = input_path if collision == "input" else profile_path
+    input_bytes = input_path.read_bytes()
+    profile_bytes = profile_path.read_bytes()
+    with pytest.raises(DailyReleaseError, match="DAILY_OUTPUT_PATH_CONFLICT"):
+        run_daily(input_path=str(input_path), output_path=str(output_path), profile_path=str(profile_path), symbol="X", now=datetime(2026, 8, 28, 16))
+    assert input_path.read_bytes() == input_bytes
+    assert profile_path.read_bytes() == profile_bytes
+
+
+def test_main_blocks_malformed_profile_with_machine_readable_marker(tmp_path, capsys):
+    input_path = write_fixture(tmp_path)
+    profile_path = tmp_path / "null.yaml"
+    profile_path.write_text("null\n", encoding="utf-8")
+    from chan_parser.cli import main
+    result = main([
+        "daily", "--input", str(input_path), "--output", str(tmp_path / "result.json"),
+        "--profile", str(profile_path), "--symbol", "X",
+    ])
+    assert result != 0
+    assert capsys.readouterr().out.splitlines() == [
+        "DAILY_RELEASE_STATUS=BLOCKED", "BLOCK_REASON=DAILY_INPUT_INVALID"
+    ]
+
+
+def test_main_blocks_output_write_failure(monkeypatch, tmp_path, capsys):
+    input_path = write_fixture(tmp_path)
+    from chan_parser.cli import main
+
+    def fail_save(self, output, filepath, pretty=True):
+        raise OSError("write denied")
+
+    monkeypatch.setattr("chan_parser.cli.Serializer.save", fail_save)
+    result = main([
+        "daily", "--input", str(input_path), "--output", str(tmp_path / "result.json"),
+        "--profile", str(PROFILE_PATH), "--symbol", "X",
+    ])
+    assert result != 0
+    assert capsys.readouterr().out.splitlines() == [
+        "DAILY_RELEASE_STATUS=BLOCKED", "BLOCK_REASON=DAILY_OUTPUT_WRITE_FAILED"
+    ]
 
 
 def test_daily_second_case_is_explicitly_blocked(monkeypatch, tmp_path):

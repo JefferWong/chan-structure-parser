@@ -5,7 +5,7 @@ import argparse
 import sys
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Sequence
+from collections.abc import Mapping, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -38,7 +38,13 @@ def _validate_daily_input(
     now: datetime,
     close: time,
 ) -> date:
-    if profile.get("runtime", {}).get("close_only") is not True:
+    if not isinstance(profile, Mapping):
+        raise DailyReleaseError("DAILY_INPUT_INVALID")
+    runtime = profile.get("runtime")
+    data_quality = profile.get("data_quality")
+    if not isinstance(runtime, Mapping) or not isinstance(data_quality, Mapping):
+        raise DailyReleaseError("DAILY_INPUT_INVALID")
+    if runtime.get("close_only") is not True:
         raise DailyReleaseError("DAILY_PROFILE_NOT_CLOSE_ONLY")
     if quality.get("parse_errors", 0):
         raise DailyReleaseError("DAILY_INPUT_INVALID")
@@ -55,7 +61,7 @@ def _validate_daily_input(
     if len(local_dates) != len(set(local_dates)):
         raise DailyReleaseError("DAILY_DUPLICATE_SESSION")
 
-    minimum = profile.get("data_quality", {}).get("min_bars_required")
+    minimum = data_quality.get("min_bars_required")
     if type(minimum) is not int or len(bars) < minimum:
         raise DailyReleaseError("DAILY_MIN_BARS_NOT_MET")
 
@@ -89,10 +95,26 @@ def run_daily(
     except ZoneInfoNotFoundError as error:
         raise DailyReleaseError("DAILY_INPUT_INVALID") from error
     try:
+        input_resolved = Path(input_path).resolve(strict=False)
+        output_resolved = Path(output_path).resolve(strict=False)
+        profile_resolved = Path(profile_path).resolve(strict=False)
+    except (OSError, RuntimeError) as error:
+        raise DailyReleaseError("DAILY_INPUT_INVALID") from error
+    if output_resolved in {input_resolved, profile_resolved}:
+        raise DailyReleaseError("DAILY_OUTPUT_PATH_CONFLICT")
+    try:
         close = time.fromisoformat(close_time)
+        if close.tzinfo is not None:
+            raise DailyReleaseError("DAILY_INPUT_INVALID")
         profile = yaml.safe_load(Path(profile_path).read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, yaml.YAMLError) as error:
         raise DailyReleaseError("DAILY_INPUT_INVALID") from error
+    if not isinstance(profile, Mapping):
+        raise DailyReleaseError("DAILY_INPUT_INVALID")
+    if not isinstance(profile.get("runtime"), Mapping):
+        raise DailyReleaseError("DAILY_INPUT_INVALID")
+    if not isinstance(profile.get("data_quality"), Mapping):
+        raise DailyReleaseError("DAILY_INPUT_INVALID")
 
     adapter = CSVAdapter(input_path)
     try:
@@ -121,9 +143,13 @@ def run_daily(
     state["meta"]["symbol"] = symbol
     state["meta"]["bar_frequency"] = "1d"
     state["meta"]["analysis_mode"] = "close_only"
-    state["audit"]["input_sha256"] = adapter.input_checksum
-    output_hash = Serializer().compute_content_hash(state)
-    Serializer().save(state, output_path)
+    state["audit"]["input_checksum"] = adapter.input_checksum
+    serializer = Serializer()
+    semantic_hash = serializer.compute_content_hash(state)
+    try:
+        output_hash = serializer.save(state, output_path)
+    except OSError as error:
+        raise DailyReleaseError("DAILY_OUTPUT_WRITE_FAILED") from error
     print("DAILY_RELEASE_STATUS=PASS")
     print(f"SYMBOL={symbol}")
     print("FREQUENCY=1d")
@@ -133,6 +159,7 @@ def run_daily(
     print(f"SEGMENT_COUNT={len(state['structures'].get('segments', []))}")
     print(f"CHECKPOINT_COUNT={state['runtime_state']['checkpoint_count']}")
     print(f"OUTPUT_SHA256={output_hash}")
+    print(f"OUTPUT_SEMANTIC_HASH={semantic_hash}")
     print("SECOND_CASE_PENDING=NO")
     return state
 
