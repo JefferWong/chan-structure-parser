@@ -80,6 +80,19 @@ result = engine.process(raw_bars)
 plot_chan_structure(result, title="300308.SZ 30min", save_path="output.png")
 ```
 
+## 生产日线收盘命令
+
+```bash
+chan-parse daily \
+  --input daily.csv \
+  --output daily.json \
+  --profile configs/profiles/minimal_strict_v1.yaml \
+  --symbol 600519.SH
+```
+
+生产日线模式仅接受已收盘的日线数据，Segment 范围为 `FIRST_CASE_ONLY`。
+`SEGMENT_SECOND_CASE_PENDING` 会 fail closed；输出仅包含结构解析结果，不包含买卖信号或投资建议。
+
 ## 输出格式
 
 ```json
