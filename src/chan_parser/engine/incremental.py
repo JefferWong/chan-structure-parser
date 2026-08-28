@@ -35,8 +35,10 @@ from ..contracts.segment_incremental_replacement import (
     materialize_incremental_segment_replacement,
 )
 from ..contracts.segment_incremental_source_continuity import (
+    SegmentIncrementalSourceContinuityAction,
     SegmentIncrementalSourceContinuityError,
     bind_incremental_segment_source_strokes,
+    evaluate_incremental_segment_source_continuity,
 )
 from .segment_lifecycle_emitter import SegmentLifecycleEmitter
 
@@ -86,6 +88,10 @@ class _IncrementalProductionRollbackState(_IncrementalReferenceAppendRollbackSta
     checkpoints: dict
     next_checkpoint_id: int
     segment_metrics: dict
+    last_full_evaluated_source_binding: tuple
+    last_full_result_sealed: bool
+    last_full_segment_logical_id: str | None
+    last_full_segment_content_hash: str | None
 
 
 def replace_segment_result(result: SegmentEngineResult, segment) -> SegmentEngineResult:
@@ -157,6 +163,10 @@ class IncrementalEngine:
             "segment_evaluated_strokes": 0,
             "segment_fast_reuse": False,
         }
+        self._last_full_evaluated_source_binding = ()
+        self._last_full_result_sealed = False
+        self._last_full_segment_logical_id = None
+        self._last_full_segment_content_hash = None
 
     def append_one(self, raw_bar: RawBar) -> dict[str, Any]:
         return self.append_batch([raw_bar])
@@ -209,6 +219,12 @@ class IncrementalEngine:
             checkpoints=copy.deepcopy(self._checkpoints),
             next_checkpoint_id=self._next_checkpoint_id,
             segment_metrics=copy.deepcopy(self._segment_metrics),
+            last_full_evaluated_source_binding=copy.deepcopy(
+                self._last_full_evaluated_source_binding
+            ),
+            last_full_result_sealed=self._last_full_result_sealed,
+            last_full_segment_logical_id=self._last_full_segment_logical_id,
+            last_full_segment_content_hash=self._last_full_segment_content_hash,
         )
 
     def _restore_production_append_rollback_state(self, state):
@@ -219,6 +235,12 @@ class IncrementalEngine:
         self._checkpoints = copy.deepcopy(state.checkpoints)
         self._next_checkpoint_id = state.next_checkpoint_id
         self._segment_metrics = copy.deepcopy(state.segment_metrics)
+        self._last_full_evaluated_source_binding = copy.deepcopy(
+            state.last_full_evaluated_source_binding
+        )
+        self._last_full_result_sealed = state.last_full_result_sealed
+        self._last_full_segment_logical_id = state.last_full_segment_logical_id
+        self._last_full_segment_content_hash = state.last_full_segment_content_hash
 
     def _evaluate_segment_production(self) -> None:
         source = tuple(
@@ -239,13 +261,22 @@ class IncrementalEngine:
         previous = self._segments[0] if self._segments else None
         if previous is not None:
             try:
-                previous_binding = bind_incremental_segment_source_strokes(
-                    self._segment_source_strokes
+                continuity = evaluate_incremental_segment_source_continuity(
+                    previous=previous,
+                    previous_source_strokes=self._segment_source_strokes,
+                    current_source_strokes=source,
                 )
-                current_binding = bind_incremental_segment_source_strokes(source)
+                current_binding = continuity.current_source_binding
+                anchor = self._last_full_evaluated_source_binding
                 if (
-                    len(current_binding) > len(previous_binding)
-                    and current_binding[: len(previous_binding)] == previous_binding
+                    continuity.action
+                    is SegmentIncrementalSourceContinuityAction.PRESERVED
+                    and len(anchor) > 0
+                    and len(current_binding) > len(anchor)
+                    and current_binding[: len(anchor)] == anchor
+                    and self._last_full_result_sealed
+                    and previous.logical_id == self._last_full_segment_logical_id
+                    and previous.content_hash() == self._last_full_segment_content_hash
                 ):
                     self._segment_source_strokes = copy.deepcopy(source)
                     self._segment_metrics["segment_fast_reuse"] = True
@@ -257,6 +288,31 @@ class IncrementalEngine:
         ).process_primary(source, sequence_id="incremental:primary")
         current = copy.deepcopy(current)
         self._segment_metrics["segment_evaluated_strokes"] = len(source)
+        try:
+            self._last_full_evaluated_source_binding = bind_incremental_segment_source_strokes(
+                source
+            )
+        except SegmentIncrementalSourceContinuityError:
+            self._last_full_evaluated_source_binding = ()
+        self._last_full_result_sealed = False
+        self._last_full_segment_logical_id = None
+        self._last_full_segment_content_hash = None
+        if current.segment is not None and current.primary_evidence is not None:
+            feature_ids = tuple(element.logical_id for element in current.feature_elements)
+            primary_ids = current.primary_evidence.primary_element_logical_ids
+            primary_indexes = [
+                feature_ids.index(logical_id)
+                for logical_id in primary_ids
+                if logical_id in feature_ids
+            ]
+            rightmost_primary_element_index = (
+                max(primary_indexes) if primary_indexes else len(feature_ids)
+            )
+            self._last_full_result_sealed = (
+                rightmost_primary_element_index < len(feature_ids) - 1
+            )
+            self._last_full_segment_logical_id = current.segment.logical_id
+            self._last_full_segment_content_hash = current.segment.content_hash()
         if current.reason_code == "SEGMENT_SECOND_CASE_PENDING":
             raise ValueError("SEGMENT_SECOND_CASE_PENDING")
         if (
@@ -338,6 +394,10 @@ class IncrementalEngine:
                 rule_version=previous.rule_version,
                 detail={"old_revision": previous.revision, "new_revision": materialized.materialized_segment.revision},
             ))
+        elif materialized.action is SegmentIncrementalReconciliationAction.REUSE:
+            # A full oracle may refresh evidence without changing formal
+            # semantic content.  REUSE is intentionally event-free.
+            pass
         else:
             self._segment_lifecycle_emitter.emit(
                 result=replace_segment_result(current, materialized.materialized_segment),
@@ -667,6 +727,11 @@ class IncrementalEngine:
             "segment_evaluated_strokes": 0,
             "segment_fast_reuse": False,
         })
+        if self.segment_production_enabled:
+            self._last_full_evaluated_source_binding = ()
+            self._last_full_result_sealed = False
+            self._last_full_segment_logical_id = None
+            self._last_full_segment_content_hash = None
         self._checkpoints = {
             retained_id: retained
             for retained_id, retained in self._checkpoints.items()
