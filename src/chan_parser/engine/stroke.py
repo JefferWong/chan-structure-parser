@@ -72,6 +72,16 @@ class StrokeEngine:
                     valid, reason, detail = self._validate(
                         start, winner, merged_bars, bar_index_offset
                     )
+                    replacement = None
+                    if valid:
+                        replacement = self._create_stroke(
+                            start,
+                            winner,
+                            merged_bars,
+                            counter,
+                            bar_index_offset,
+                        )
+                        counter += 1
                     provisional.mark_invalidated(
                         provisional.end_bar_index,
                         "SAME_TYPE_ANCHOR_REPLACED",
@@ -85,21 +95,15 @@ class StrokeEngine:
                             candidate.right_bar_id or candidate.merged_bar_id
                         ),
                         reason_code="SAME_TYPE_PROVISIONAL_TAIL_REPLACED",
-                        replaced_by=None,
+                        replaced_by=(
+                            replacement.object_id if replacement is not None else None
+                        ),
                         rule_profile=self.rule_profile,
                         rule_version=self.rule_version,
                         detail={"replacement_reason": reason},
                     ))
                     strokes.pop()
-                    if valid:
-                        replacement = self._create_stroke(
-                            start,
-                            winner,
-                            merged_bars,
-                            counter,
-                            bar_index_offset,
-                        )
-                        counter += 1
+                    if replacement is not None:
                         strokes.append(replacement)
                         events.append(LifecycleEvent(
                             event_type=EventType.CREATED,

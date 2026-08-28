@@ -6,6 +6,8 @@ outside the repository; these tests are skipped when that local evidence is
 not available and never access a network provider.
 """
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -17,7 +19,8 @@ from chan_parser.engine.full_rebuild import FullRebuildEngine
 from chan_parser.engine.incremental import IncrementalEngine
 
 
-QUALIFICATION_ROOT = Path.home() / "chan-qualification" / "real-daily-20260828"
+FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "pr28_real_market"
+MANIFEST_PATH = FIXTURE_ROOT / "manifest.json"
 PREFIX_LENGTHS = {
     "600519.SH": 89,
     "300750.SZ": 183,
@@ -31,11 +34,16 @@ def _profile():
 
 
 def _bars(symbol):
-    path = QUALIFICATION_ROOT / "source" / f"{symbol}.csv"
-    if not path.exists():
-        pytest.skip(f"frozen qualification evidence unavailable: {path}")
+    path = FIXTURE_ROOT / f"{symbol}.csv"
+    assert path.is_file(), f"missing committed PR28 fixture: {path}"
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    entry = manifest["fixtures"][symbol]
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["fixture_sha256"]
     bars, quality = CSVAdapter(str(path)).load()
     assert quality["status"] == "OK"
+    assert len(bars) == entry["fixture_prefix_row_count"]
+    assert bars[0].timestamp.date().isoformat() == entry["fixture_first_date"]
+    assert bars[-1].timestamp.date().isoformat() == entry["fixture_last_date"]
     return bars[: PREFIX_LENGTHS[symbol]]
 
 

@@ -1,0 +1,51 @@
+{
+  "qualification_evidence_path_note": "$HOME/chan-qualification/real-daily-20260828/manifest/source_manifest.json",
+  "qualification_date": "2026-08-28",
+  "fixtures": {
+    "600519.SH": {
+      "symbol": "600519.SH",
+      "asset_type": "stock",
+      "primary_provider": "Eastmoney",
+      "secondary_provider": "Tencent",
+      "adjustment_mode": "RAW_UNADJUSTED",
+      "original_full_row_count": 1857,
+      "fixture_prefix_row_count": 89,
+      "fixture_first_date": "2019-01-02",
+      "fixture_last_date": "2019-05-17",
+      "original_source_csv_sha256": "2fb2e0140aebc4cc908d499c1b77c34aad2d092e0bea36089c279c9d6c81d509",
+      "fixture_sha256": "c0cafc0f376d2778ef4337c4b588238d52fd05f0415aeda75c3ec5d784555fce",
+      "original_failure_reason": "SEGMENT_SOURCE_DIRECTION_NOT_ALTERNATING",
+      "original_failure_date": "2019-05-17"
+    },
+    "300750.SZ": {
+      "symbol": "300750.SZ",
+      "asset_type": "stock",
+      "primary_provider": "Eastmoney",
+      "secondary_provider": "Tencent",
+      "adjustment_mode": "RAW_UNADJUSTED",
+      "original_full_row_count": 1857,
+      "fixture_prefix_row_count": 183,
+      "fixture_first_date": "2019-01-02",
+      "fixture_last_date": "2019-09-30",
+      "original_source_csv_sha256": "0b63cbb019c594be8f661310eb91c185bd6040e69f21044b2fddd27cc81b54b0",
+      "fixture_sha256": "1055b52de6e548377f305908ec6bc297da6d6347df7526a74e5523a393ab296b",
+      "original_failure_reason": "SEGMENT_SOURCE_ENDPOINT_NOT_CONTIGUOUS",
+      "original_failure_date": "2019-09-30"
+    },
+    "510300.SH": {
+      "symbol": "510300.SH",
+      "asset_type": "etf",
+      "primary_provider": "Eastmoney",
+      "secondary_provider": "Sina",
+      "adjustment_mode": "RAW_UNADJUSTED",
+      "original_full_row_count": 1857,
+      "fixture_prefix_row_count": 214,
+      "fixture_first_date": "2019-01-02",
+      "fixture_last_date": "2019-11-19",
+      "original_source_csv_sha256": "1a3ff5cd6769426f519e2de9645c6779c4396fae59434c0288aef3796319b508",
+      "fixture_sha256": "e983a5044ac8faccc9df392ae2742b9aae8f422fe16c8e2698131b2a35377b87",
+      "original_failure_reason": "SEGMENT_SOURCE_ENDPOINT_NOT_CONTIGUOUS",
+      "original_failure_date": "2019-11-19"
+    }
+  }
+}
