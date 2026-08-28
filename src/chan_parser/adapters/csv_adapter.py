@@ -9,7 +9,7 @@ from __future__ import annotations
 import csv
 import hashlib
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from ..domain.raw_bar import RawBar
 
@@ -36,7 +36,7 @@ class CSVAdapter:
         self._column_map: dict[str, str] = {}
         self._input_checksum: Optional[str] = None
 
-    def load(self) -> tuple[list[RawBar], dict[str, any]]:
+    def load(self) -> tuple[list[RawBar], dict[str, Any]]:
         """加载 CSV 文件，返回 RawBar 列表和数据质量报告。
 
         Returns:
@@ -73,6 +73,13 @@ class CSVAdapter:
                     if bar is None:
                         quality_report["parse_errors"] += 1
                         continue
+
+                    # Identity is assigned from successfully materialized rows,
+                    # not source line numbers.  Parse-error rows therefore do
+                    # not create gaps in the runtime sequence.
+                    materialized_index = len(raw_bars)
+                    bar.bar_id = f"bar_{materialized_index + 1:06d}"
+                    bar.bar_index = materialized_index
 
                     # 检查重复时间戳
                     ts_key = bar.timestamp.isoformat()
