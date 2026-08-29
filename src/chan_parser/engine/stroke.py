@@ -36,8 +36,10 @@ class StrokeEngine:
         )
         anchor = fractals[0]
         counter = id_offset + 1
+        fractal_by_id = {fractal.fractal_id: fractal for fractal in fractals}
         for candidate in fractals[1:]:
             if candidate.fractal_type == anchor.fractal_type:
+                previous_anchor = anchor
                 winner = self._more_extreme(anchor, candidate)
                 loser = candidate if winner is anchor else anchor
                 events.append(LifecycleEvent(
@@ -56,6 +58,114 @@ class StrokeEngine:
                         "fractal_type": candidate.fractal_type.value,
                     },
                 ))
+                if (
+                    winner is candidate
+                    and strokes
+                    and strokes[-1].status == StructureStatus.PROVISIONAL
+                    and strokes[-1].end_fractal_id == previous_anchor.fractal_id
+                ):
+                    provisional = strokes[-1]
+                    start = fractal_by_id.get(provisional.start_fractal_id)
+                    if start is None:
+                        raise ValueError(
+                            "PHASE1_PROVISIONAL_TAIL_START_NOT_FOUND"
+                        )
+                    valid, reason, detail = self._validate(
+                        start, winner, merged_bars, bar_index_offset
+                    )
+                    replacement = None
+                    if valid:
+                        replacement = self._create_stroke(
+                            start,
+                            winner,
+                            merged_bars,
+                            counter,
+                            bar_index_offset,
+                        )
+                        counter += 1
+                    provisional.mark_invalidated(
+                        provisional.end_bar_index,
+                        "SAME_TYPE_ANCHOR_REPLACED",
+                    )
+                    events.append(LifecycleEvent(
+                        event_type=EventType.INVALIDATED,
+                        object_type="stroke",
+                        object_id=provisional.object_id,
+                        logical_id=provisional.logical_id,
+                        occurred_at_bar_id=(
+                            candidate.right_bar_id or candidate.merged_bar_id
+                        ),
+                        reason_code="SAME_TYPE_PROVISIONAL_TAIL_REPLACED",
+                        replaced_by=(
+                            replacement.object_id if replacement is not None else None
+                        ),
+                        rule_profile=self.rule_profile,
+                        rule_version=self.rule_version,
+                        detail={"replacement_reason": reason},
+                    ))
+                    strokes.pop()
+                    if replacement is not None:
+                        strokes.append(replacement)
+                        anchor = winner
+                        events.append(LifecycleEvent(
+                            event_type=EventType.CREATED,
+                            object_type="stroke",
+                            object_id=replacement.object_id,
+                            logical_id=replacement.logical_id,
+                            occurred_at_bar_id=(
+                                candidate.right_bar_id or candidate.merged_bar_id
+                            ),
+                            reason_code="SAME_TYPE_PROVISIONAL_TAIL_REVISED",
+                            replaced_by=None,
+                            rule_profile=self.rule_profile,
+                            rule_version=self.rule_version,
+                            detail={
+                                "start_bar_index": replacement.start_bar_index,
+                                "end_bar_index": replacement.end_bar_index,
+                                "direction": replacement.direction.value,
+                            },
+                        ))
+                    else:
+                        # The provisional tail may already have confirmed its
+                        # immediate predecessor.  Removing it without a
+                        # replacement removes that confirmation dependency too.
+                        predecessor = strokes[-1] if strokes else None
+                        if predecessor is not None and predecessor.status == StructureStatus.CONFIRMED:
+                            if predecessor.end_fractal_id != provisional.start_fractal_id:
+                                raise ValueError(
+                                    "PHASE1_CONFIRMATION_DEPENDENCY_INVALID"
+                                )
+                            predecessor.status = StructureStatus.PROVISIONAL
+                            predecessor.confirmed_at_bar = None
+                            predecessor.confirmed_at_raw_bar_index = None
+                            predecessor.repaint_risk = "HIGH"
+                            predecessor.confirmation_requirements = [
+                                "next strict stroke must confirm"
+                            ]
+                            events.append(LifecycleEvent(
+                                event_type=EventType.STATUS_CHANGED,
+                                object_type="stroke",
+                                object_id=predecessor.object_id,
+                                logical_id=predecessor.logical_id,
+                                occurred_at_bar_id=(
+                                    candidate.right_bar_id or candidate.merged_bar_id
+                                ),
+                                reason_code="CONFIRMING_SUCCESSOR_INVALIDATED",
+                                rule_profile=self.rule_profile,
+                                rule_version=self.rule_version,
+                                detail={
+                                    "old_status": StructureStatus.CONFIRMED.value,
+                                    "new_status": StructureStatus.PROVISIONAL.value,
+                                    "invalidated_successor_object_id": provisional.object_id,
+                                    "invalidated_successor_logical_id": provisional.logical_id,
+                                    "successor_reason": "SAME_TYPE_PROVISIONAL_TAIL_REPLACED",
+                                },
+                            ))
+                        # No valid bridge reaches the winner.  Reusing the
+                        # winner would create a disconnected confirmed island;
+                        # the invalidated tail's start is the only safe anchor.
+                        anchor = start
+                    continue
                 anchor = winner
                 continue
             valid, reason, detail = self._validate(anchor, candidate, merged_bars, bar_index_offset)
@@ -137,7 +247,23 @@ class StrokeEngine:
                     rule_version=self.rule_version,
                 ))
             strokes = kept
+        self._validate_confirmed_chain(strokes)
         return strokes, events
+
+    @staticmethod
+    def _validate_confirmed_chain(strokes: list[Stroke]) -> None:
+        confirmed = [
+            stroke for stroke in strokes
+            if stroke.status == StructureStatus.CONFIRMED
+        ]
+        for previous, current in zip(confirmed, confirmed[1:]):
+            if (
+                previous.direction == current.direction
+                or previous.end_fractal_id != current.start_fractal_id
+                or previous.end_bar_index != current.start_bar_index
+                or previous.end_price != current.start_price
+            ):
+                raise ValueError("PHASE1_CONFIRMED_STROKE_CHAIN_INVALID")
 
     @staticmethod
     def _more_extreme(a: Fractal, b: Fractal) -> Fractal:
