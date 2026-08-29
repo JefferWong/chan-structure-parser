@@ -39,6 +39,7 @@ class StrokeEngine:
         fractal_by_id = {fractal.fractal_id: fractal for fractal in fractals}
         for candidate in fractals[1:]:
             if candidate.fractal_type == anchor.fractal_type:
+                previous_anchor = anchor
                 winner = self._more_extreme(anchor, candidate)
                 loser = candidate if winner is anchor else anchor
                 events.append(LifecycleEvent(
@@ -61,7 +62,7 @@ class StrokeEngine:
                     winner is candidate
                     and strokes
                     and strokes[-1].status == StructureStatus.PROVISIONAL
-                    and strokes[-1].end_fractal_id == anchor.fractal_id
+                    and strokes[-1].end_fractal_id == previous_anchor.fractal_id
                 ):
                     provisional = strokes[-1]
                     start = fractal_by_id.get(provisional.start_fractal_id)
@@ -105,6 +106,7 @@ class StrokeEngine:
                     strokes.pop()
                     if replacement is not None:
                         strokes.append(replacement)
+                        anchor = winner
                         events.append(LifecycleEvent(
                             event_type=EventType.CREATED,
                             object_type="stroke",
@@ -123,6 +125,47 @@ class StrokeEngine:
                                 "direction": replacement.direction.value,
                             },
                         ))
+                    else:
+                        # The provisional tail may already have confirmed its
+                        # immediate predecessor.  Removing it without a
+                        # replacement removes that confirmation dependency too.
+                        predecessor = strokes[-1] if strokes else None
+                        if predecessor is not None and predecessor.status == StructureStatus.CONFIRMED:
+                            if predecessor.end_fractal_id != provisional.start_fractal_id:
+                                raise ValueError(
+                                    "PHASE1_CONFIRMATION_DEPENDENCY_INVALID"
+                                )
+                            predecessor.status = StructureStatus.PROVISIONAL
+                            predecessor.confirmed_at_bar = None
+                            predecessor.confirmed_at_raw_bar_index = None
+                            predecessor.repaint_risk = "HIGH"
+                            predecessor.confirmation_requirements = [
+                                "next strict stroke must confirm"
+                            ]
+                            events.append(LifecycleEvent(
+                                event_type=EventType.STATUS_CHANGED,
+                                object_type="stroke",
+                                object_id=predecessor.object_id,
+                                logical_id=predecessor.logical_id,
+                                occurred_at_bar_id=(
+                                    candidate.right_bar_id or candidate.merged_bar_id
+                                ),
+                                reason_code="CONFIRMING_SUCCESSOR_INVALIDATED",
+                                rule_profile=self.rule_profile,
+                                rule_version=self.rule_version,
+                                detail={
+                                    "old_status": StructureStatus.CONFIRMED.value,
+                                    "new_status": StructureStatus.PROVISIONAL.value,
+                                    "invalidated_successor_object_id": provisional.object_id,
+                                    "invalidated_successor_logical_id": provisional.logical_id,
+                                    "successor_reason": "SAME_TYPE_PROVISIONAL_TAIL_REPLACED",
+                                },
+                            ))
+                        # No valid bridge reaches the winner.  Reusing the
+                        # winner would create a disconnected confirmed island;
+                        # the invalidated tail's start is the only safe anchor.
+                        anchor = start
+                    continue
                 anchor = winner
                 continue
             valid, reason, detail = self._validate(anchor, candidate, merged_bars, bar_index_offset)

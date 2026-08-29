@@ -225,6 +225,14 @@ def test_invalid_provisional_tail_replacement_has_no_replacement_link():
     )
     assert invalidated.replaced_by is None
     assert all(stroke.object_id != invalidated.object_id for stroke in strokes)
+    predecessor = next(
+        event for event in events
+        if event.reason_code == "CONFIRMING_SUCCESSOR_INVALIDATED"
+    )
+    assert predecessor.event_type == "STATUS_CHANGED"
+    assert predecessor.detail["old_status"] == "CONFIRMED"
+    assert predecessor.detail["new_status"] == "PROVISIONAL"
+    assert predecessor.detail["invalidated_successor_object_id"] == invalidated.object_id
 
 
 @pytest.mark.parametrize(
